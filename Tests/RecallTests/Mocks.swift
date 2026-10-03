@@ -145,3 +145,32 @@ final class MockScreenCapture: ScreenCapture, @unchecked Sendable {
         state = .idle
     }
 }
+
+struct MockScreenCapturePermissionProvider: ScreenCapturePermissionProvider {
+    var isGranted: Bool = true
+    var requestAccessResult: Bool = true
+
+    func preflightAccess() -> Bool {
+        return isGranted
+    }
+
+    func requestAccess() -> Bool {
+        return requestAccessResult
+    }
+}
+
+struct MockAlertPresenter: AlertPresenter {
+    var confirmResult: Bool = true
+
+    func confirmPurgeRecordings() -> Bool {
+        return confirmResult
+    }
+}
+
+struct MockOpenPanelPresenter: OpenPanelPresenter {
+    var pathResult: String? = "/tmp/selected_export_folder"
+
+    func chooseDirectory(completion: @escaping (String?) -> Void) {
+        completion(pathResult)
+    }
+}

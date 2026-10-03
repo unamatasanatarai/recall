@@ -42,4 +42,31 @@ struct SettingsViewTests {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Stepper increment math mismatch"])
         }
     }
+
+    static func testResetStorageDefaults() throws {
+        let settings = SettingsManager.shared
+        settings.maxStorageMB = 2500
+        settings.maxStorageMinutes = 120
+
+        var purgedCalled = false
+        let view = SettingsView(settings: settings, onPurgeRecordings: {
+            purgedCalled = true
+        })
+
+        view.resetStorageMB()
+        if settings.maxStorageMB != 1000 {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected resetStorageMB to restore 1000 MB default"])
+        }
+
+        view.resetStorageMinutes()
+        if settings.maxStorageMinutes != 60 {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected resetStorageMinutes to restore 60 minutes default"])
+        }
+
+        view.onPurgeRecordings()
+        if !purgedCalled {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected onPurgeRecordings callback to execute"])
+        }
+    }
 }
+

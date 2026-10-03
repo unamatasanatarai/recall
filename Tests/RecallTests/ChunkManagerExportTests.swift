@@ -1,4 +1,7 @@
 import Foundation
+import AVFoundation
+import CoreMedia
+import CoreVideo
 
 struct ChunkManagerExportTests {
     static func testExportClip_emptyChunkGuard() throws {
@@ -105,6 +108,65 @@ struct ChunkManagerExportTests {
 
         if !completed {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Export completion was not invoked"])
+        }
+    }
+
+    static func testExportClip_avfoundationFallbackWithRealMP4Asset() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("recall_real_asset_test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let chunkURL = tempDir.appendingPathComponent("chunk.mp4")
+        let writer = try AVAssetWriter(outputURL: chunkURL, fileType: .mp4)
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: 320,
+            AVVideoHeightKey: 240
+        ]
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+        writer.add(input)
+        writer.startWriting()
+        writer.startSession(atSourceTime: CMTime.zero)
+
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault, 320, 240, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
+        if let pb = pixelBuffer {
+            adaptor.append(pb, withPresentationTime: CMTime.zero)
+        }
+        input.markAsFinished()
+
+        let writerExp = NSCondition()
+        writerExp.lock()
+        writer.finishWriting {
+            writerExp.signal()
+        }
+        _ = writerExp.wait(until: Date().addingTimeInterval(2.0))
+        writerExp.unlock()
+
+        let fileSystem = MockFileSystem()
+        let attrs = (try? FileManager.default.attributesOfItem(atPath: chunkURL.path)) ?? [:]
+        fileSystem.files[chunkURL] = attrs
+
+        let mockRunner = MockFFmpegRunner(ffmpegPathToReturn: "/usr/local/bin/ffmpeg", concatAndTrimResult: false, fileSystem: fileSystem)
+        let manager = ChunkManager(
+            config: MockStorageConfig(exportsDirectoryURL: tempDir),
+            fileSystem: fileSystem,
+            ffmpegRunner: mockRunner,
+            metadataProvider: DefaultVideoMetadataProvider(),
+            chunksDirectory: tempDir
+        )
+
+        manager.registerChunk(url: chunkURL, startTime: Date().addingTimeInterval(-10), duration: 1.0)
+
+        var completed = false
+        manager.exportClip(offsetSeconds: 1.0) { _ in
+            completed = true
+        }
+
+        let timeout = Date().addingTimeInterval(3.0)
+        while !completed && Date() < timeout {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
     }
 }

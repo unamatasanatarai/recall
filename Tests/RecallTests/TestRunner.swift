@@ -114,6 +114,9 @@ struct TestRunner {
         runTest("ChunkManagerExport.testExportClip_avfoundationFallbackWhenFFmpegFails") {
             try ChunkManagerExportTests.testExportClip_avfoundationFallbackWhenFFmpegFails()
         }
+        runTest("ChunkManagerExport.testExportClip_avfoundationFallbackWithRealMP4Asset") {
+            try ChunkManagerExportTests.testExportClip_avfoundationFallbackWithRealMP4Asset()
+        }
 
         // --- Section 5: FFmpegRunnerTests ---
         runTest("FFmpegRunner.testCandidatePathDiscovery") {
@@ -207,6 +210,9 @@ struct TestRunner {
         runTest("SettingsView.testStepperIncrements") {
             try SettingsViewTests.testStepperIncrements()
         }
+        runTest("SettingsView.testResetStorageDefaults") {
+            try SettingsViewTests.testResetStorageDefaults()
+        }
 
         // --- Section 11: ConcurrencyTests ---
         runTest("Concurrency.testConcurrentRegisterChunk") {
@@ -270,6 +276,119 @@ struct TestRunner {
         }
         runTest("BuildAutomation.testReleaseScriptSemanticBumping") {
             try BuildAutomationTests.testReleaseScriptSemanticBumping()
+        }
+
+        // --- Section 16: RecorderEngineDeepCoverageTests ---
+        runTest("RecorderEngineDeepCoverage.testAlreadyRecordingGuard") {
+            try RecorderEngineDeepCoverageTests.testAlreadyRecordingGuard()
+        }
+        runTest("RecorderEngineDeepCoverage.testPermissionPreflightMissing") {
+            try RecorderEngineDeepCoverageTests.testPermissionPreflightMissing()
+        }
+        runTest("RecorderEngineDeepCoverage.testPermissionPreflightGranted") {
+            try RecorderEngineDeepCoverageTests.testPermissionPreflightGranted()
+        }
+        runTest("RecorderEngineDeepCoverage.testHandleFrameDropAndIdle") {
+            try RecorderEngineDeepCoverageTests.testHandleFrameDropAndIdle()
+        }
+        runTest("RecorderEngineDeepCoverage.testHandleFrameNilSurface") {
+            try RecorderEngineDeepCoverageTests.testHandleFrameNilSurface()
+        }
+        runTest("RecorderEngineDeepCoverage.testStartNewChunkAndRotateChunk") {
+            try RecorderEngineDeepCoverageTests.testStartNewChunkAndRotateChunk()
+        }
+        runTest("RecorderEngineDeepCoverage.testStreamStopCleanup") {
+            try RecorderEngineDeepCoverageTests.testStreamStopCleanup()
+        }
+        runTest("RecorderEngineDeepCoverage.testLogFileOverSizeRotation") {
+            try RecorderEngineDeepCoverageTests.testLogFileOverSizeRotation()
+        }
+        runTest("RecorderEngineDeepCoverage.testFlushCurrentChunkNilWriter") {
+            try RecorderEngineDeepCoverageTests.testFlushCurrentChunkNilWriter()
+        }
+        runTest("RecorderEngineDeepCoverage.testActiveChunkFlushAndStopStream") {
+            try RecorderEngineDeepCoverageTests.testActiveChunkFlushAndStopStream()
+        }
+        runTest("RecorderEngineDeepCoverage.testHandleFrameRotationAndWriting") {
+            try RecorderEngineDeepCoverageTests.testHandleFrameRotationAndWriting()
+        }
+        runTest("RecorderEngineDeepCoverage.testHandleFrameWithIOSurface") {
+            try RecorderEngineDeepCoverageTests.testHandleFrameWithIOSurface()
+        }
+
+        // --- Section 17: ChunkManagerAdvancedExportTests ---
+        runTest("ChunkManagerAdvancedExport.testSubSecondTargetClamping") {
+            try ChunkManagerAdvancedExportTests.testSubSecondTargetClamping()
+        }
+        runTest("ChunkManagerAdvancedExport.testExportOffsetLargerThanTotalStore") {
+            try ChunkManagerAdvancedExportTests.testExportOffsetLargerThanTotalStore()
+        }
+        runTest("ChunkManagerAdvancedExport.testSingleNewestChunkOverLimitPurge") {
+            try ChunkManagerAdvancedExportTests.testSingleNewestChunkOverLimitPurge()
+        }
+
+        // --- Section 18: OverlayHUDWindowRenderTests ---
+        runTest("OverlayHUDWindowRender.testZeroDistanceBeamPath") {
+            try OverlayHUDWindowRenderTests.testZeroDistanceBeamPath()
+        }
+        runTest("OverlayHUDWindowRender.testBeamEndWidthClamping") {
+            try OverlayHUDWindowRenderTests.testBeamEndWidthClamping()
+        }
+        runTest("OverlayHUDWindowRender.testSubMinuteHUDTimeFormatting") {
+            try OverlayHUDWindowRenderTests.testSubMinuteHUDTimeFormatting()
+        }
+        runTest("OverlayHUDWindowRender.testOrderOutHUDAction") {
+            try OverlayHUDWindowRenderTests.testOrderOutHUDAction()
+        }
+        runTest("OverlayHUDWindowRender.testRenderOverlayHUDBeamView") {
+            try OverlayHUDWindowRenderTests.testRenderOverlayHUDBeamView()
+        }
+
+        // --- Section 19: MenuBarPreferencesIntegrationTests ---
+        runTest("MenuBarPreferencesIntegration.testPurgeRecordingsConfirmed") {
+            try MenuBarPreferencesIntegrationTests.testPurgeRecordingsConfirmed()
+        }
+        runTest("MenuBarPreferencesIntegration.testPurgeRecordingsCancelled") {
+            try MenuBarPreferencesIntegrationTests.testPurgeRecordingsCancelled()
+        }
+        runTest("MenuBarPreferencesIntegration.testOpenSettingsAndQuitApp") {
+            try MenuBarPreferencesIntegrationTests.testOpenSettingsAndQuitApp()
+        }
+        runTest("MenuBarPreferencesIntegration.testPreferencesDirectoryPickerConfirmed") {
+            try MenuBarPreferencesIntegrationTests.testPreferencesDirectoryPickerConfirmed()
+        }
+        runTest("MenuBarPreferencesIntegration.testPreferencesDirectoryPickerCancelled") {
+            try MenuBarPreferencesIntegrationTests.testPreferencesDirectoryPickerCancelled()
+        }
+
+        runTest("MenuBarPreferencesIntegration.testQuitApplicationStreamTearDown") {
+            try MenuBarPreferencesIntegrationTests.testQuitApplicationStreamTearDown()
+        }
+        runTest("MenuBarPreferencesIntegration.testMenuBarManagerMouseEventHandling") {
+            try MenuBarPreferencesIntegrationTests.testMenuBarManagerMouseEventHandling()
+        }
+        runTest("MenuBarPreferencesIntegration.testTriggerExport") {
+            try MenuBarPreferencesIntegrationTests.testTriggerExport()
+        }
+        runTest("MenuBarPreferencesIntegration.testSettingsWindowControllerCloseWindow") {
+            try MenuBarPreferencesIntegrationTests.testSettingsWindowControllerCloseWindow()
+        }
+        runTest("MenuBarPreferencesIntegration.testDefaultProtocolImplementations") {
+            try MenuBarPreferencesIntegrationTests.testDefaultProtocolImplementations()
+        }
+
+        // --- Section 20: SystemProcessAutomationTests ---
+        runTest("SystemProcessAutomation.testTCCPermissionRevocationCommand") {
+            try SystemProcessAutomationTests.testTCCPermissionRevocationCommand()
+        }
+        runTest("SystemProcessAutomation.testBuildCommandOutputBinaryCheck") {
+            try SystemProcessAutomationTests.testBuildCommandOutputBinaryCheck()
+        }
+        runTest("SystemProcessAutomation.testAppDelegateLifecycle") {
+            try SystemProcessAutomationTests.testAppDelegateLifecycle()
+        }
+        runTest("SystemProcessAutomation.testRecallAppInstantiation") {
+            try SystemProcessAutomationTests.testRecallAppInstantiation()
         }
 
         print("\nSummary: \(passedCount) passed, \(failedCount) failed.\n")

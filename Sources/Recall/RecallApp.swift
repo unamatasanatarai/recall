@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+#if !TEST_RUNNER
 @main
 struct RecallApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -11,6 +12,15 @@ struct RecallApp: App {
         }
     }
 }
+#else
+struct RecallApp: App {
+    var body: some Scene {
+        Settings {
+            EmptyView()
+        }
+    }
+}
+#endif
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {

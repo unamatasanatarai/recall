@@ -5,11 +5,11 @@ echo "==> Compiling unit test runner..."
 mkdir -p build
 
 SDK_PATH=$(xcrun --show-sdk-path)
-
-SOURCES=$(find Sources/Recall -name '*.swift' ! -name 'RecallApp.swift')
+SOURCES=$(find Sources/Recall -name '*.swift')
 TEST_SOURCES=$(find Tests/RecallTests -name '*.swift')
 
 swiftc \
+    -DTEST_RUNNER \
     -sdk "${SDK_PATH}" \
     -target x86_64-apple-macos12.3 \
     -framework ScreenCaptureKit \

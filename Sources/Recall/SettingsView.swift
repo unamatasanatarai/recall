@@ -4,6 +4,7 @@ import AppKit
 struct SettingsView: View {
     @ObservedObject var settings: SettingsManager = SettingsManager.shared
     var chunkStore: ChunkStore = ChunkManager.shared
+    var openPanelPresenter: OpenPanelPresenter = DefaultOpenPanelPresenter()
     var onPurgeRecordings: () -> Void = { MenuBarManager.shared.purgeRecordings() }
     @State private var currentDurationText: String = ""
     @State private var currentSizeBytesText: String = ""
@@ -92,7 +93,7 @@ struct SettingsView: View {
 
                         // Reset size 🔄
                         Button(action: {
-                            settings.maxStorageMB = 1000
+                            resetStorageMB()
                         }) {
                             Image(systemName: "arrow.counterclockwise")
                                 .font(.system(size: 11, weight: .bold))
@@ -145,7 +146,7 @@ struct SettingsView: View {
 
                         // Reset time 🔄
                         Button(action: {
-                            settings.maxStorageMinutes = 60
+                            resetStorageMinutes()
                         }) {
                             Image(systemName: "arrow.counterclockwise")
                                 .font(.system(size: 11, weight: .bold))
@@ -180,25 +181,20 @@ struct SettingsView: View {
         }
     }
 
-    private func chooseDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Select Export Folder"
-
-        if let window = NSApp.keyWindow {
-            panel.beginSheetModal(for: window) { response in
-                if response == .OK, let url = panel.url {
-                    settings.exportsDirectoryPath = url.path
-                }
-            }
-        } else {
-            if panel.runModal() == .OK, let url = panel.url {
-                settings.exportsDirectoryPath = url.path
+    func chooseDirectory() {
+        openPanelPresenter.chooseDirectory { path in
+            if let path = path {
+                settings.exportsDirectoryPath = path
             }
         }
+    }
+
+    func resetStorageMB() {
+        settings.maxStorageMB = 1000
+    }
+
+    func resetStorageMinutes() {
+        settings.maxStorageMinutes = 60
     }
 
     private func updateUsageStats() {

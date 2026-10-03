@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build test dmg release run launch revoke clean
+.PHONY: help build test coverage dmg release run launch revoke clean
 
 ## help: Display this help message
 help:
@@ -16,6 +16,10 @@ build:
 ## test: Run unit test suite
 test:
 	@./test.sh
+
+## coverage: Run unit test suite and display code coverage report
+coverage:
+	@./coverage.sh
 
 ## dmg: Build Recall.app and package into a pretty compressed .dmg file
 dmg: build

@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import AppKit
 
 // MARK: - StorageConfig Protocol
 protocol StorageConfig {
@@ -103,4 +104,70 @@ protocol ScreenCapture: AnyObject {
     func startContinuousRecording()
     func flushCurrentChunk(completion: (() -> Void)?)
     func stopStream()
+}
+
+// MARK: - ScreenCapturePermissionProvider Protocol
+protocol ScreenCapturePermissionProvider {
+    func preflightAccess() -> Bool
+    func requestAccess() -> Bool
+}
+
+struct DefaultScreenCapturePermissionProvider: ScreenCapturePermissionProvider {
+    func preflightAccess() -> Bool {
+        return CGPreflightScreenCaptureAccess()
+    }
+    func requestAccess() -> Bool {
+        return CGRequestScreenCaptureAccess()
+    }
+}
+
+// MARK: - AlertPresenter Protocol
+protocol AlertPresenter {
+    func confirmPurgeRecordings() -> Bool
+}
+
+struct DefaultAlertPresenter: AlertPresenter {
+    func confirmPurgeRecordings() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Purge Stored Recordings?"
+        alert.informativeText = "Are you sure you want to delete all cached recording chunks? This action cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Purge All")
+        alert.addButton(withTitle: "Cancel")
+
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+}
+
+// MARK: - OpenPanelPresenter Protocol
+protocol OpenPanelPresenter {
+    func chooseDirectory(completion: @escaping (String?) -> Void)
+}
+
+struct DefaultOpenPanelPresenter: OpenPanelPresenter {
+    func chooseDirectory(completion: @escaping (String?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Select Export Folder"
+
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window) { response in
+                if response == .OK, let url = panel.url {
+                    completion(url.path)
+                } else {
+                    completion(nil)
+                }
+            }
+        } else {
+            if panel.runModal() == .OK, let url = panel.url {
+                completion(url.path)
+            } else {
+                completion(nil)
+            }
+        }
+    }
 }

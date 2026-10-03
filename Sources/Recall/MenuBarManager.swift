@@ -13,12 +13,16 @@ final class MenuBarManager: NSObject {
     private var selectedOffsetSeconds: TimeInterval = 0
 
 
+    private let alertPresenter: AlertPresenter
+
     init(
         recorder: ScreenCapture = RecorderEngine.shared,
-        chunkStore: ChunkStore = ChunkManager.shared
+        chunkStore: ChunkStore = ChunkManager.shared,
+        alertPresenter: AlertPresenter = DefaultAlertPresenter()
     ) {
         self.recorder = recorder
         self.chunkStore = chunkStore
+        self.alertPresenter = alertPresenter
         super.init()
     }
 
@@ -153,101 +157,97 @@ final class MenuBarManager: NSObject {
         statusItem?.menu = nil // Shown only on right click or menu trigger
     }
 
-    @objc private func openSettings() {
+    @objc func openSettings() {
         SettingsWindowController.shared.showWindow()
     }
 
     @objc func purgeRecordings() {
-        let alert = NSAlert()
-        alert.messageText = "Purge Stored Recordings?"
-        alert.informativeText = "Are you sure you want to delete all cached recording chunks? This action cannot be undone."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Purge All")
-        alert.addButton(withTitle: "Cancel")
-
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
+        if alertPresenter.confirmPurgeRecordings() {
             chunkStore.purgeAllChunks()
         }
     }
 
-    @objc private func quitApp() {
+    @objc func quitApp() {
         recorder.stopStream()
         NSApplication.shared.terminate(nil)
+    }
+
+    @discardableResult
+    func handleMouseEvent(type: NSEvent.EventType, mouseLocation: NSPoint, buttonFrame: NSRect) -> Bool {
+        if type == .rightMouseDown {
+            if buttonFrame.contains(mouseLocation) {
+                self.showContextMenu()
+                return true // Intercepted
+            }
+            return false
+        }
+
+        if type == .leftMouseDown {
+            if buttonFrame.contains(mouseLocation) {
+                self.isDragging = true
+                self.dragStartLocation = NSPoint(x: buttonFrame.midX, y: buttonFrame.minY)
+                self.selectedOffsetSeconds = 0
+                return true // Intercepted
+            }
+        }
+
+        if self.isDragging {
+            if type == .leftMouseDragged {
+                let dy = self.dragStartLocation.y - mouseLocation.y
+                if dy > 0 {
+                    let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
+                    let maxDragDistance = max(200.0, screenHeight * 0.75)
+                    let clampedDy = min(maxDragDistance, dy)
+                    let progress = min(1.0, max(0.0, clampedDy / maxDragDistance))
+
+                    let maxDuration = self.chunkStore.totalRecordedDuration
+                    let rawSeconds = progress * maxDuration
+                    let steppedSeconds = max(30.0, round(rawSeconds / 30.0) * 30.0)
+                    let finalSeconds = min(maxDuration, steppedSeconds)
+                    self.selectedOffsetSeconds = finalSeconds
+
+                    let clampedY = self.dragStartLocation.y - clampedDy
+                    let clampedMouseLocation = NSPoint(x: mouseLocation.x, y: clampedY)
+
+                    OverlayHUDWindow.shared.show(at: clampedMouseLocation, startLocation: self.dragStartLocation, offsetSeconds: finalSeconds)
+                } else {
+                    self.selectedOffsetSeconds = 0
+                    OverlayHUDWindow.shared.hideHUD()
+                }
+                return true
+            }
+
+            if type == .leftMouseUp {
+                self.isDragging = false
+                OverlayHUDWindow.shared.hideHUD()
+
+                let offset = self.selectedOffsetSeconds
+                if offset >= 1.0 {
+                    print("[MenuBarManager] Mouse released! Exporting snippet for offset: \(offset)s")
+                    self.triggerExport(offsetSeconds: offset)
+                }
+                return true
+            }
+        }
+
+        return false
     }
 
     private func setupDragGestureTracking() {
         guard let button = statusItem?.button else { return }
 
-        // Local event monitor for mouse down, drag, and release on the status bar button
         NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseDown]) { [weak self] event in
             guard let self = self else { return event }
 
             let mouseLocation = NSEvent.mouseLocation
             let buttonFrame = button.window?.convertToScreen(button.frame) ?? .zero
 
-            if event.type == .rightMouseDown {
-                if buttonFrame.contains(mouseLocation) {
-                    self.showContextMenu()
-                    return nil
-                }
-                return event
-            }
-
-            if event.type == .leftMouseDown {
-                if buttonFrame.contains(mouseLocation) {
-                    self.isDragging = true
-                    self.dragStartLocation = NSPoint(x: buttonFrame.midX, y: buttonFrame.minY)
-                    self.selectedOffsetSeconds = 0
-                    return nil // Intercept click
-                }
-            }
-
-            if self.isDragging {
-                if event.type == .leftMouseDragged {
-                    let dy = self.dragStartLocation.y - mouseLocation.y
-                    if dy > 0 {
-                        let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
-                        let maxDragDistance = max(200.0, screenHeight * 0.75)
-                        let clampedDy = min(maxDragDistance, dy)
-                        let progress = min(1.0, max(0.0, clampedDy / maxDragDistance))
-
-                        let maxDuration = self.chunkStore.totalRecordedDuration
-                        let rawSeconds = progress * maxDuration
-                        let steppedSeconds = max(30.0, round(rawSeconds / 30.0) * 30.0)
-                        let finalSeconds = min(maxDuration, steppedSeconds)
-                        self.selectedOffsetSeconds = finalSeconds
-
-                        // Stop line vertically at maxDragDistance limit, while following mouse X horizontally
-                        let clampedY = self.dragStartLocation.y - clampedDy
-                        let clampedMouseLocation = NSPoint(x: mouseLocation.x, y: clampedY)
-
-                        OverlayHUDWindow.shared.show(at: clampedMouseLocation, startLocation: self.dragStartLocation, offsetSeconds: finalSeconds)
-                    } else {
-                        self.selectedOffsetSeconds = 0
-                        OverlayHUDWindow.shared.hideHUD()
-                    }
-                    return nil
-                }
-
-                if event.type == .leftMouseUp {
-                    self.isDragging = false
-                    OverlayHUDWindow.shared.hideHUD()
-
-                    let offset = self.selectedOffsetSeconds
-                    if offset >= 1.0 {
-                        print("[MenuBarManager] Mouse released! Exporting snippet for offset: \(offset)s")
-                        self.triggerExport(offsetSeconds: offset)
-                    }
-                    return nil
-                }
-            }
-
-            return event
+            let intercepted = self.handleMouseEvent(type: event.type, mouseLocation: mouseLocation, buttonFrame: buttonFrame)
+            return intercepted ? nil : event
         }
     }
 
-    private func showContextMenu() {
+    func showContextMenu() {
         guard let button = statusItem?.button else { return }
         let menu = NSMenu()
 
@@ -261,8 +261,7 @@ final class MenuBarManager: NSObject {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
     }
 
-    private func triggerExport(offsetSeconds: TimeInterval) {
-        // Briefly flash button icon to indicate export activity
+    func triggerExport(offsetSeconds: TimeInterval) {
         if let button = statusItem?.button {
             button.contentTintColor = .systemRed
         }

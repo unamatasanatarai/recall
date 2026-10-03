@@ -25,9 +25,9 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
     private var currentChunkURL: URL?
     private var currentChunkStartTime: Date = Date()
 
-    private var framesWrittenInChunk: Int64 = 0
+    var framesWrittenInChunk: Int64 = 0
     private var isWriterSessionStarted = false
-    private var chunkStartTimeSeconds: CFTimeInterval = 0
+    var chunkStartTimeSeconds: CFTimeInterval = 0
     private let ciContext = CIContext()
     private let segmentDurationThreshold: TimeInterval = 30.0
 
@@ -49,17 +49,28 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
         return formatter
     }()
 
-    init(chunkStore: ChunkStore = ChunkManager.shared) {
+    private let permissionProvider: ScreenCapturePermissionProvider
+
+    init(
+        chunkStore: ChunkStore = ChunkManager.shared,
+        permissionProvider: ScreenCapturePermissionProvider = DefaultScreenCapturePermissionProvider(),
+        logFileURL: URL? = nil
+    ) {
         self.chunkStore = chunkStore
-        let cacheDir: URL
-        if let xdgCache = ProcessInfo.processInfo.environment["XDG_CACHE_HOME"], !xdgCache.isEmpty {
-            cacheDir = URL(fileURLWithPath: xdgCache).appendingPathComponent("recall")
+        self.permissionProvider = permissionProvider
+        if let customLogURL = logFileURL {
+            self.logFileURL = customLogURL
         } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            cacheDir = home.appendingPathComponent(".cache/recall")
+            let cacheDir: URL
+            if let xdgCache = ProcessInfo.processInfo.environment["XDG_CACHE_HOME"], !xdgCache.isEmpty {
+                cacheDir = URL(fileURLWithPath: xdgCache).appendingPathComponent("recall")
+            } else {
+                let home = FileManager.default.homeDirectoryForCurrentUser
+                cacheDir = home.appendingPathComponent(".cache/recall")
+            }
+            try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+            self.logFileURL = cacheDir.appendingPathComponent("recall_debug.log")
         }
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        self.logFileURL = cacheDir.appendingPathComponent("recall_debug.log")
         super.init()
         log("RecorderEngine initialized.")
     }
@@ -73,22 +84,22 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
             return
         }
 
-        let preflightGranted = CGPreflightScreenCaptureAccess()
-        log("CGPreflightScreenCaptureAccess: \(preflightGranted)")
+        let preflightGranted = permissionProvider.preflightAccess()
+        log("ScreenCapturePermission preflightGranted: \(preflightGranted)")
 
         if preflightGranted {
             permissionTimer?.invalidate()
             permissionTimer = nil
             beginStreamCapture()
         } else {
-            log("Screen capture permission missing. Requesting access via CGRequestScreenCaptureAccess()...")
-            CGRequestScreenCaptureAccess()
+            log("Screen capture permission missing. Requesting access...")
+            _ = permissionProvider.requestAccess()
             self.state = .error("Grant screen recording permission in System Settings.")
 
             permissionTimer?.invalidate()
             permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
-                if CGPreflightScreenCaptureAccess() {
+                if self.permissionProvider.preflightAccess() {
                     self.log("Screen capture permission granted!")
                     self.permissionTimer?.invalidate()
                     self.permissionTimer = nil
@@ -99,7 +110,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
     }
 
     @discardableResult
-    private func beginStreamCapture() -> Bool {
+    func beginStreamCapture() -> Bool {
         if displayStream != nil {
             displayStream?.stop()
             displayStream = nil
@@ -157,7 +168,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
         }
     }
 
-    private func startNewChunk(width: Int, height: Int) throws {
+    func startNewChunk(width: Int, height: Int) throws {
         let chunksDir = chunkStore.chunksDirectory
         let timestamp = RecorderEngine.chunkDateFormatter.string(from: Date())
         let chunkURL = chunksDir.appendingPathComponent("chunk_\(timestamp).mp4")
@@ -216,7 +227,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
         self.chunkStartTimeSeconds = CACurrentMediaTime()
     }
 
-    private func handleFrame(status: CGDisplayStreamFrameStatus, displayTime: UInt64, surface: IOSurface?, width: Int, height: Int) {
+    func handleFrame(status: CGDisplayStreamFrameStatus, displayTime: UInt64, surface: IOSurface?, width: Int, height: Int) {
         guard status == .frameComplete || status == .frameIdle else { return }
         guard let surface = surface else { return }
 
@@ -267,7 +278,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
         }
     }
 
-    private func rotateChunk(width: Int, height: Int) {
+    func rotateChunk(width: Int, height: Int) {
         guard let oldWriter = currentWriter, let oldInput = currentVideoInput, let oldURL = currentChunkURL else { return }
         let startTime = currentChunkStartTime
         let duration = CACurrentMediaTime() - chunkStartTimeSeconds
