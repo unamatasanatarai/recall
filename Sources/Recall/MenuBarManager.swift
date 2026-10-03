@@ -1,0 +1,280 @@
+import AppKit
+import SwiftUI
+
+final class MenuBarManager: NSObject {
+    static let shared = MenuBarManager()
+
+    private let recorder: ScreenCapture
+    private let chunkStore: ChunkStore
+
+    private var statusItem: NSStatusItem?
+    private var isDragging = false
+    private var dragStartLocation: NSPoint = .zero
+    private var selectedOffsetSeconds: TimeInterval = 0
+
+
+    init(
+        recorder: ScreenCapture = RecorderEngine.shared,
+        chunkStore: ChunkStore = ChunkManager.shared
+    ) {
+        self.recorder = recorder
+        self.chunkStore = chunkStore
+        super.init()
+    }
+
+    func setupMenuBar() {
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusItem = statusItem
+
+        if let button = statusItem.button {
+            button.image = createMenuBarIcon()
+        }
+
+        setupContextMenu()
+        setupDragGestureTracking()
+    }
+
+    private func createMenuBarIcon() -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let icon = NSImage(size: size, flipped: false) { rect in
+            guard let cgContext = NSGraphicsContext.current?.cgContext else { return false }
+
+            // Move drawing 2px up towards top of status bar
+            cgContext.translateBy(x: 0, y: 2.0)
+
+            let primaryColor = NSColor.black
+
+            // 1. Clock Circle (Bottom center)
+            let clockCenter = CGPoint(x: 9.0, y: 4.8)
+            let clockRadius: CGFloat = 4.8
+
+            let clockPath = NSBezierPath(ovalIn: NSRect(
+                x: clockCenter.x - clockRadius,
+                y: clockCenter.y - clockRadius,
+                width: clockRadius * 2,
+                height: clockRadius * 2
+            ))
+            clockPath.lineWidth = 1.05 // Lighter stroke
+            primaryColor.setStroke()
+            clockPath.stroke()
+
+            // Clock Hands (Hour & Minute hands)
+            let handsPath = NSBezierPath()
+            handsPath.lineWidth = 1.0 // Lighter stroke
+            handsPath.lineCapStyle = .round
+            // Hour hand (pointing to ~10 o'clock)
+            handsPath.move(to: clockCenter)
+            handsPath.line(to: CGPoint(x: 7.0, y: 6.6))
+            // Minute hand (pointing to ~2 o'clock)
+            handsPath.move(to: clockCenter)
+            handsPath.line(to: CGPoint(x: 11.6, y: 6.2))
+            primaryColor.setStroke()
+            handsPath.stroke()
+
+            // Center Dot
+            let dotRadius: CGFloat = 1.1
+            let dotPath = NSBezierPath(ovalIn: NSRect(
+                x: clockCenter.x - dotRadius,
+                y: clockCenter.y - dotRadius,
+                width: dotRadius * 2,
+                height: dotRadius * 2
+            ))
+            primaryColor.setFill()
+            dotPath.fill()
+
+            // 2. Fedora Hat (Top tilted over clock)
+            // Hat Crown
+            let crownPath = NSBezierPath()
+            crownPath.move(to: CGPoint(x: 5.6, y: 9.4))
+            crownPath.curve(to: CGPoint(x: 7.8, y: 14.6),
+                            controlPoint1: CGPoint(x: 5.4, y: 11.6),
+                            controlPoint2: CGPoint(x: 6.5, y: 14.1))
+            crownPath.curve(to: CGPoint(x: 10.5, y: 13.9),
+                            controlPoint1: CGPoint(x: 8.8, y: 13.8),
+                            controlPoint2: CGPoint(x: 9.5, y: 13.4))
+            crownPath.curve(to: CGPoint(x: 12.8, y: 12.8),
+                            controlPoint1: CGPoint(x: 11.5, y: 14.3),
+                            controlPoint2: CGPoint(x: 12.4, y: 13.6))
+            crownPath.curve(to: CGPoint(x: 12.6, y: 8.1),
+                            controlPoint1: CGPoint(x: 13.2, y: 11.1),
+                            controlPoint2: CGPoint(x: 13.0, y: 9.1))
+            crownPath.curve(to: CGPoint(x: 5.6, y: 9.4),
+                            controlPoint1: CGPoint(x: 10.0, y: 7.4),
+                            controlPoint2: CGPoint(x: 7.5, y: 8.4))
+            crownPath.close()
+
+            primaryColor.setFill()
+            crownPath.fill()
+
+            // Hat Brim (Sleek tilted brim)
+            let brimPath = NSBezierPath()
+            brimPath.move(to: CGPoint(x: 2.2, y: 8.4))
+            brimPath.curve(to: CGPoint(x: 15.8, y: 10.6),
+                           controlPoint1: CGPoint(x: 6.5, y: 10.6),
+                           controlPoint2: CGPoint(x: 11.5, y: 11.6))
+            brimPath.curve(to: CGPoint(x: 15.0, y: 9.4),
+                           controlPoint1: CGPoint(x: 16.2, y: 10.1),
+                           controlPoint2: CGPoint(x: 15.8, y: 9.5))
+            brimPath.curve(to: CGPoint(x: 2.2, y: 8.4),
+                           controlPoint1: CGPoint(x: 10.5, y: 6.6),
+                           controlPoint2: CGPoint(x: 5.5, y: 6.8))
+            brimPath.close()
+
+            primaryColor.setFill()
+            brimPath.fill()
+
+            // Cut out negative space for the hat ribbon band so it works cleanly as a template mask
+            cgContext.setBlendMode(.clear)
+            let bandPath = NSBezierPath()
+            bandPath.move(to: CGPoint(x: 5.7, y: 9.6))
+            bandPath.curve(to: CGPoint(x: 12.5, y: 10.9),
+                           controlPoint1: CGPoint(x: 8.0, y: 8.9),
+                           controlPoint2: CGPoint(x: 10.5, y: 9.7))
+            bandPath.lineWidth = 0.85
+            NSColor.black.setStroke()
+            bandPath.stroke()
+
+            return true
+        }
+        icon.isTemplate = true
+        return icon
+    }
+
+    private func setupContextMenu() {
+        let menu = NSMenu()
+
+        let settingsItem = NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        let quitItem = NSMenuItem(title: "Quit Recall", action: #selector(quitApp), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+        statusItem?.menu = nil // Shown only on right click or menu trigger
+    }
+
+    @objc private func openSettings() {
+        SettingsWindowController.shared.showWindow()
+    }
+
+    @objc func purgeRecordings() {
+        let alert = NSAlert()
+        alert.messageText = "Purge Stored Recordings?"
+        alert.informativeText = "Are you sure you want to delete all cached recording chunks? This action cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Purge All")
+        alert.addButton(withTitle: "Cancel")
+
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            chunkStore.purgeAllChunks()
+        }
+    }
+
+    @objc private func quitApp() {
+        recorder.stopStream()
+        NSApplication.shared.terminate(nil)
+    }
+
+    private func setupDragGestureTracking() {
+        guard let button = statusItem?.button else { return }
+
+        // Local event monitor for mouse down, drag, and release on the status bar button
+        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseDown]) { [weak self] event in
+            guard let self = self else { return event }
+
+            let mouseLocation = NSEvent.mouseLocation
+            let buttonFrame = button.window?.convertToScreen(button.frame) ?? .zero
+
+            if event.type == .rightMouseDown {
+                if buttonFrame.contains(mouseLocation) {
+                    self.showContextMenu()
+                    return nil
+                }
+                return event
+            }
+
+            if event.type == .leftMouseDown {
+                if buttonFrame.contains(mouseLocation) {
+                    self.isDragging = true
+                    self.dragStartLocation = NSPoint(x: buttonFrame.midX, y: buttonFrame.minY)
+                    self.selectedOffsetSeconds = 0
+                    return nil // Intercept click
+                }
+            }
+
+            if self.isDragging {
+                if event.type == .leftMouseDragged {
+                    let dy = self.dragStartLocation.y - mouseLocation.y
+                    if dy > 0 {
+                        let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
+                        let maxDragDistance = max(200.0, screenHeight * 0.75)
+                        let clampedDy = min(maxDragDistance, dy)
+                        let progress = min(1.0, max(0.0, clampedDy / maxDragDistance))
+
+                        let maxDuration = self.chunkStore.totalRecordedDuration
+                        let rawSeconds = progress * maxDuration
+                        let steppedSeconds = max(30.0, round(rawSeconds / 30.0) * 30.0)
+                        let finalSeconds = min(maxDuration, steppedSeconds)
+                        self.selectedOffsetSeconds = finalSeconds
+
+                        // Stop line vertically at maxDragDistance limit, while following mouse X horizontally
+                        let clampedY = self.dragStartLocation.y - clampedDy
+                        let clampedMouseLocation = NSPoint(x: mouseLocation.x, y: clampedY)
+
+                        OverlayHUDWindow.shared.show(at: clampedMouseLocation, startLocation: self.dragStartLocation, offsetSeconds: finalSeconds)
+                    } else {
+                        self.selectedOffsetSeconds = 0
+                        OverlayHUDWindow.shared.hideHUD()
+                    }
+                    return nil
+                }
+
+                if event.type == .leftMouseUp {
+                    self.isDragging = false
+                    OverlayHUDWindow.shared.hideHUD()
+
+                    let offset = self.selectedOffsetSeconds
+                    if offset >= 1.0 {
+                        print("[MenuBarManager] Mouse released! Exporting snippet for offset: \(offset)s")
+                        self.triggerExport(offsetSeconds: offset)
+                    }
+                    return nil
+                }
+            }
+
+            return event
+        }
+    }
+
+    private func showContextMenu() {
+        guard let button = statusItem?.button else { return }
+        let menu = NSMenu()
+
+        let settingsItem = NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        let quitItem = NSMenuItem(title: "Quit Recall", action: #selector(quitApp), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
+    }
+
+    private func triggerExport(offsetSeconds: TimeInterval) {
+        // Briefly flash button icon to indicate export activity
+        if let button = statusItem?.button {
+            button.contentTintColor = .systemRed
+        }
+
+        chunkStore.exportClip(offsetSeconds: offsetSeconds) { [weak self] exportedURL in
+            if let url = exportedURL {
+                NSSound.beep()
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self?.statusItem?.button?.contentTintColor = nil
+            }
+        }
+    }
+}
