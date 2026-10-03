@@ -58,7 +58,7 @@ final class ChunkManager: ChunkStore, @unchecked Sendable {
         loadExistingChunks()
     }
 
-    private func loadExistingChunks() {
+    func loadExistingChunks() {
         queue.async {
             guard let files = try? self.fileSystem.contentsOfDirectory(at: self.chunksDirectory, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey], options: []) else { return }
 
@@ -114,7 +114,9 @@ final class ChunkManager: ChunkStore, @unchecked Sendable {
 
                 let chunk = ChunkFile(url: url, startTime: startTime, duration: actualDuration, sizeBytes: size)
                 self.chunks.append(chunk)
+                self.chunks.sort(by: { $0.startTime < $1.startTime })
                 self._enforceLimits()
+
             } else {
                 try? self.fileSystem.removeItem(at: url)
             }

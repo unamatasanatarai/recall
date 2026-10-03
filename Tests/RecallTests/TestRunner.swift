@@ -19,20 +19,257 @@ struct TestRunner {
             }
         }
 
-        runTest("ChunkManager.testEnforceLimits_purgesOldestWhenOverSizeBytes") {
-            try ChunkManagerTests.testEnforceLimits_purgesOldestWhenOverSizeBytes()
+        // --- Section 1: SettingsManagerTests ---
+        runTest("SettingsManager.testDefaultValuesInitialization_exportsDirectoryPath") {
+            try SettingsManagerTests.testDefaultValuesInitialization_exportsDirectoryPath()
         }
-
-        runTest("ChunkManager.testPurgeAllChunks_removesAllRegisteredFiles") {
-            try ChunkManagerTests.testPurgeAllChunks_removesAllRegisteredFiles()
+        runTest("SettingsManager.testDefaultSizeLimit") {
+            try SettingsManagerTests.testDefaultSizeLimit()
         }
-
+        runTest("SettingsManager.testDefaultTimeLimit") {
+            try SettingsManagerTests.testDefaultTimeLimit()
+        }
+        runTest("SettingsManager.testUserDefaultsPersistence_exportsDirectoryPath") {
+            try SettingsManagerTests.testUserDefaultsPersistence_exportsDirectoryPath()
+        }
+        runTest("SettingsManager.testUserDefaultsPersistence_maxStorageMB") {
+            try SettingsManagerTests.testUserDefaultsPersistence_maxStorageMB()
+        }
+        runTest("SettingsManager.testUserDefaultsPersistence_maxStorageMinutes") {
+            try SettingsManagerTests.testUserDefaultsPersistence_maxStorageMinutes()
+        }
+        runTest("SettingsManager.testStorageConfigByteCalculation_variousValues") {
+            try SettingsManagerTests.testStorageConfigByteCalculation_variousValues()
+        }
+        runTest("SettingsManager.testStorageConfigSecondCalculation_variousValues") {
+            try SettingsManagerTests.testStorageConfigSecondCalculation_variousValues()
+        }
+        runTest("SettingsManager.testTildePathExpansion") {
+            try SettingsManagerTests.testTildePathExpansion()
+        }
+        runTest("SettingsManager.testExportDirectoryAutoCreation") {
+            try SettingsManagerTests.testExportDirectoryAutoCreation()
+        }
+        runTest("SettingsManager.testSettingsChangedCallback_maxStorageMB") {
+            try SettingsManagerTests.testSettingsChangedCallback_maxStorageMB()
+        }
+        runTest("SettingsManager.testSettingsChangedCallback_maxStorageMinutes") {
+            try SettingsManagerTests.testSettingsChangedCallback_maxStorageMinutes()
+        }
         runTest("SettingsManager.testResetToDefaults_resetsProperties") {
             try SettingsManagerTests.testResetToDefaults_resetsProperties()
         }
 
-        runTest("SettingsManager.testStorageConfigCalculations") {
-            try SettingsManagerTests.testStorageConfigCalculations()
+        // --- Section 2 & 3: ChunkManagerTests ---
+        runTest("ChunkManager.testDirectoryCreation") {
+            try ChunkManagerTests.testDirectoryCreation()
+        }
+        runTest("ChunkManager.testLoadExistingFiles_mp4AndIgnoreNonMp4") {
+            try ChunkManagerTests.testLoadExistingFiles_mp4AndIgnoreNonMp4()
+        }
+        runTest("ChunkManager.testLoadExistingFiles_purgeCorrupt") {
+            try ChunkManagerTests.testLoadExistingFiles_purgeCorrupt()
+        }
+        runTest("ChunkManager.testParseDateFromFilename") {
+            try ChunkManagerTests.testParseDateFromFilename()
+        }
+        runTest("ChunkManager.testFallbackCreationDate") {
+            try ChunkManagerTests.testFallbackCreationDate()
+        }
+        runTest("ChunkManager.testSortOrder") {
+            try ChunkManagerTests.testSortOrder()
+        }
+        runTest("ChunkManager.testTotalDurationCalculation") {
+            try ChunkManagerTests.testTotalDurationCalculation()
+        }
+        runTest("ChunkManager.testEnforceLimits_purgesOldestWhenOverSizeBytes") {
+            try ChunkManagerTests.testEnforceLimits_purgesOldestWhenOverSizeBytes()
+        }
+        runTest("ChunkManager.testEnforceLimits_purgesOldestWhenOverDuration") {
+            try ChunkManagerTests.testEnforceLimits_purgesOldestWhenOverDuration()
+        }
+        runTest("ChunkManager.testEnforceLimits_multiChunkSequentialPurge") {
+            try ChunkManagerTests.testEnforceLimits_multiChunkSequentialPurge()
+        }
+        runTest("ChunkManager.testEnforceLimits_zeroLimitHandling") {
+            try ChunkManagerTests.testEnforceLimits_zeroLimitHandling()
+        }
+        runTest("ChunkManager.testPurgeAllChunks_removesAllRegisteredFiles") {
+            try ChunkManagerTests.testPurgeAllChunks_removesAllRegisteredFiles()
+        }
+        runTest("ChunkManager.testRegisterZeroByteChunk") {
+            try ChunkManagerTests.testRegisterZeroByteChunk()
+        }
+        runTest("ChunkManager.testRegisterCorruptChunk") {
+            try ChunkManagerTests.testRegisterCorruptChunk()
+        }
+
+        // --- Section 4: ChunkManagerExportTests ---
+        runTest("ChunkManagerExport.testExportClip_emptyChunkGuard") {
+            try ChunkManagerExportTests.testExportClip_emptyChunkGuard()
+        }
+        runTest("ChunkManagerExport.testExportClip_chunkSelectionAndTrimming") {
+            try ChunkManagerExportTests.testExportClip_chunkSelectionAndTrimming()
+        }
+        runTest("ChunkManagerExport.testExportClip_avfoundationFallbackWhenFFmpegFails") {
+            try ChunkManagerExportTests.testExportClip_avfoundationFallbackWhenFFmpegFails()
+        }
+
+        // --- Section 5: FFmpegRunnerTests ---
+        runTest("FFmpegRunner.testCandidatePathDiscovery") {
+            try FFmpegRunnerTests.testCandidatePathDiscovery()
+        }
+        runTest("FFmpegRunner.testMissingBinaryHandling") {
+            try FFmpegRunnerTests.testMissingBinaryHandling()
+        }
+        runTest("FFmpegRunner.testConcatCommandFormatting") {
+            try FFmpegRunnerTests.testConcatCommandFormatting()
+        }
+        runTest("FFmpegRunner.testTrimArgumentFormatting") {
+            try FFmpegRunnerTests.testTrimArgumentFormatting()
+        }
+
+        // --- Section 6: VideoMetadataProviderTests ---
+        runTest("VideoMetadataProvider.testValidMP4Validation") {
+            try VideoMetadataProviderTests.testValidMP4Validation()
+        }
+        runTest("VideoMetadataProvider.testZeroDurationValidation") {
+            try VideoMetadataProviderTests.testZeroDurationValidation()
+        }
+        runTest("VideoMetadataProvider.testMissingVideoTrackValidation") {
+            try VideoMetadataProviderTests.testMissingVideoTrackValidation()
+        }
+        runTest("VideoMetadataProvider.testInfiniteDurationGuard") {
+            try VideoMetadataProviderTests.testInfiniteDurationGuard()
+        }
+
+        // --- Section 7: RecorderEngineTests ---
+        runTest("RecorderEngine.testInitialIdleState") {
+            try RecorderEngineTests.testInitialIdleState()
+        }
+        runTest("RecorderEngine.testChunkFileNaming") {
+            try RecorderEngineTests.testChunkFileNaming()
+        }
+        runTest("RecorderEngine.testLogFileRotation") {
+            try RecorderEngineTests.testLogFileRotation()
+        }
+        runTest("RecorderEngine.testFlushCurrentChunkAction") {
+            try RecorderEngineTests.testFlushCurrentChunkAction()
+        }
+        runTest("RecorderEngine.testStopStreamAction") {
+            try RecorderEngineTests.testStopStreamAction()
+        }
+
+        // --- Section 8: OverlayHUDWindowTests ---
+        runTest("OverlayHUDWindow.testHUDWindowProperties") {
+            try OverlayHUDWindowTests.testHUDWindowProperties()
+        }
+        runTest("OverlayHUDWindow.testCoordinateConversion") {
+            try OverlayHUDWindowTests.testCoordinateConversion()
+        }
+        runTest("OverlayHUDWindow.testTaperedBeamPathGeneration") {
+            try OverlayHUDWindowTests.testTaperedBeamPathGeneration()
+        }
+        runTest("OverlayHUDWindow.testTimeOffsetFormatter") {
+            try OverlayHUDWindowTests.testTimeOffsetFormatter()
+        }
+        runTest("OverlayHUDWindow.testViewModelReactivity") {
+            try OverlayHUDWindowTests.testViewModelReactivity()
+        }
+
+        // --- Section 9: MenuBarManagerTests ---
+        runTest("MenuBarManager.testStatusItemCreation") {
+            try MenuBarManagerTests.testStatusItemCreation()
+        }
+        runTest("MenuBarManager.testTemplateIconMode") {
+            try MenuBarManagerTests.testTemplateIconMode()
+        }
+        runTest("MenuBarManager.testDragDownDistanceClamping") {
+            try MenuBarManagerTests.testDragDownDistanceClamping()
+        }
+        runTest("MenuBarManager.testStepQuantization") {
+            try MenuBarManagerTests.testStepQuantization()
+        }
+        runTest("MenuBarManager.testDragReleaseExportTrigger") {
+            try MenuBarManagerTests.testDragReleaseExportTrigger()
+        }
+
+        // --- Section 10: SettingsViewTests ---
+        runTest("SettingsView.testUsageStatsFormatting") {
+            try SettingsViewTests.testUsageStatsFormatting()
+        }
+        runTest("SettingsView.testUsageStatsSizeFormatting") {
+            try SettingsViewTests.testUsageStatsSizeFormatting()
+        }
+        runTest("SettingsView.testTotalClipsCountUpdate") {
+            try SettingsViewTests.testTotalClipsCountUpdate()
+        }
+        runTest("SettingsView.testStepperIncrements") {
+            try SettingsViewTests.testStepperIncrements()
+        }
+
+        // --- Section 11: ConcurrencyTests ---
+        runTest("Concurrency.testConcurrentRegisterChunk") {
+            try ConcurrencyTests.testConcurrentRegisterChunk()
+        }
+        runTest("Concurrency.testConcurrentPurgeAndLimitEnforcement") {
+            try ConcurrencyTests.testConcurrentPurgeAndLimitEnforcement()
+        }
+        runTest("Concurrency.testThreadSafeDurationAccess") {
+            try ConcurrencyTests.testThreadSafeDurationAccess()
+        }
+        runTest("Concurrency.testConcurrentLogFileWriting") {
+            try ConcurrencyTests.testConcurrentLogFileWriting()
+        }
+
+        // --- Section 12: FileSystemErrorTests ---
+        runTest("FileSystemError.testPermissionDeniedDirectoryHandling") {
+            try FileSystemErrorTests.testPermissionDeniedDirectoryHandling()
+        }
+        runTest("FileSystemError.testDiskFullAttributesHandling") {
+            try FileSystemErrorTests.testDiskFullAttributesHandling()
+        }
+        runTest("FileSystemError.testFileRemovalErrorResilience") {
+            try FileSystemErrorTests.testFileRemovalErrorResilience()
+        }
+        runTest("FileSystemError.testNonCreatableExportDirectoryFallback") {
+            try FileSystemErrorTests.testNonCreatableExportDirectoryFallback()
+        }
+
+        // --- Section 13: AVFoundationEdgeCasesTests ---
+        runTest("AVFoundationEdgeCases.testUnreadableAssetResilience") {
+            try AVFoundationEdgeCasesTests.testUnreadableAssetResilience()
+        }
+        runTest("AVFoundationEdgeCases.testAudioFreeCompositionHandling") {
+            try AVFoundationEdgeCasesTests.testAudioFreeCompositionHandling()
+        }
+        runTest("AVFoundationEdgeCases.testUnsupportedCodecErrorHandling") {
+            try AVFoundationEdgeCasesTests.testUnsupportedCodecErrorHandling()
+        }
+
+        // --- Section 14: SettingsWindowControllerTests ---
+        runTest("SettingsWindowController.testWindowSingletonInstanceReuse") {
+            try SettingsWindowControllerTests.testWindowSingletonInstanceReuse()
+        }
+        runTest("SettingsWindowController.testEscapeKeyWindowClosure") {
+            try SettingsWindowControllerTests.testEscapeKeyWindowClosure()
+        }
+        runTest("SettingsWindowController.testPreferencesResetButtonAction") {
+            try SettingsWindowControllerTests.testPreferencesResetButtonAction()
+        }
+
+        // --- Section 15: BuildAutomationTests ---
+        runTest("BuildAutomation.testIncrementalCompilationLogic") {
+            try BuildAutomationTests.testIncrementalCompilationLogic()
+        }
+        runTest("BuildAutomation.testPlistVersionEmbedding") {
+            try BuildAutomationTests.testPlistVersionEmbedding()
+        }
+        runTest("BuildAutomation.testDMGBackgroundDimensionCheck") {
+            try BuildAutomationTests.testDMGBackgroundDimensionCheck()
+        }
+        runTest("BuildAutomation.testReleaseScriptSemanticBumping") {
+            try BuildAutomationTests.testReleaseScriptSemanticBumping()
         }
 
         print("\nSummary: \(passedCount) passed, \(failedCount) failed.\n")
