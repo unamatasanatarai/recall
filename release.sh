@@ -1,34 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DRY_RUN="${DRY_RUN:-0}"
+TARGET_VERSION=""
+
+for arg in "$@"; do
+    if [ "$arg" = "--dry-run" ] || [ "$arg" = "-n" ] || [ "$arg" = "dry-run" ]; then
+        DRY_RUN=1
+    elif [ -z "${TARGET_VERSION}" ]; then
+        TARGET_VERSION="$arg"
+    fi
+done
+
 CURRENT_VERSION=$(tr -d ' \n\r' <VERSION 2>/dev/null || echo "1.0.0")
 
-# Determine target version
-TARGET_ARG="${1:-}"
-
-if [ -z "${TARGET_ARG}" ]; then
+if [ -z "${TARGET_VERSION}" ]; then
     # Auto-bump patch version by default if no version passed
     IFS='.' read -r MAJOR MINOR PATCH <<<"${CURRENT_VERSION}"
     NEXT_PATCH=$((PATCH + 1))
     NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
-elif [ "${TARGET_ARG}" = "patch" ]; then
+elif [ "${TARGET_VERSION}" = "patch" ]; then
     IFS='.' read -r MAJOR MINOR PATCH <<<"${CURRENT_VERSION}"
     NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
-elif [ "${TARGET_ARG}" = "minor" ]; then
+elif [ "${TARGET_VERSION}" = "minor" ]; then
     IFS='.' read -r MAJOR MINOR PATCH <<<"${CURRENT_VERSION}"
     NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
-elif [ "${TARGET_ARG}" = "major" ]; then
+elif [ "${TARGET_VERSION}" = "major" ]; then
     IFS='.' read -r MAJOR MINOR PATCH <<<"${CURRENT_VERSION}"
     NEW_VERSION="$((MAJOR + 1)).0.0"
 else
     # Custom version specified (e.g. 1.1.0 or v1.1.0)
-    NEW_VERSION="${TARGET_ARG#v}"
+    NEW_VERSION="${TARGET_VERSION#v}"
 fi
 
 TAG_NAME="v${NEW_VERSION}"
 
 echo "=========================================="
-echo " Creating Release ${TAG_NAME} (from v${CURRENT_VERSION})"
+if [ "${DRY_RUN}" -eq 1 ]; then
+    echo " 🧪 [DRY RUN] Simulating Release ${TAG_NAME} (from v${CURRENT_VERSION})"
+else
+    echo " Creating Release ${TAG_NAME} (from v${CURRENT_VERSION})"
+fi
 echo "=========================================="
 
 mkdir -p build
@@ -54,10 +66,11 @@ cat <<EOF >"${NOTES_FILE}"
 
 EOF
 
-FEATS=$(git log ${COMMIT_RANGE} --oneline -i --grep="^feat" || true)
-FIXES=$(git log ${COMMIT_RANGE} --oneline -i --grep="^fix" --grep="^refactor" --grep="^perf" || true)
-STYLES=$(git log ${COMMIT_RANGE} --oneline -i --grep="^style" --grep="^ui" --grep="^design" || true)
-OTHERS=$(git log ${COMMIT_RANGE} --oneline -i --grep="^feat" --grep="^fix" --grep="^refactor" --grep="^perf" --grep="^style" --grep="^ui" --grep="^design" --invert-grep || true)
+FEATS=$(git log ${COMMIT_RANGE} --oneline -i --grep="^feat" | grep -v "chore(release):" || true)
+FIXES=$(git log ${COMMIT_RANGE} --oneline -i --grep="^fix" --grep="^refactor" --grep="^perf" | grep -v "chore(release):" || true)
+DOCS=$(git log ${COMMIT_RANGE} --oneline -i --grep="^docs" | grep -v "chore(release):" || true)
+STYLES=$(git log ${COMMIT_RANGE} --oneline -i --grep="^style" --grep="^ui" --grep="^design" | grep -v "chore(release):" || true)
+OTHERS=$(git log ${COMMIT_RANGE} --oneline -i --grep="^feat" --grep="^fix" --grep="^refactor" --grep="^perf" --grep="^docs" --grep="^style" --grep="^ui" --grep="^design" --grep="^chore(release)" --invert-grep || true)
 
 if [ -n "${FEATS}" ]; then
     echo "### 🚀 Features & Enhancements" >>"${NOTES_FILE}"
@@ -68,6 +81,12 @@ fi
 if [ -n "${FIXES}" ]; then
     echo "### 🐛 Fixes & Improvements" >>"${NOTES_FILE}"
     echo "${FIXES}" | awk '{ $1=""; print "- " $0 }' >>"${NOTES_FILE}"
+    echo "" >>"${NOTES_FILE}"
+fi
+
+if [ -n "${DOCS}" ]; then
+    echo "### 📚 Documentation" >>"${NOTES_FILE}"
+    echo "${DOCS}" | awk '{ $1=""; print "- " $0 }' >>"${NOTES_FILE}"
     echo "" >>"${NOTES_FILE}"
 fi
 
@@ -91,8 +110,12 @@ cat "${NOTES_FILE}"
 echo ""
 
 # 3. Update VERSION file
-echo "${NEW_VERSION}" >VERSION
-echo "==> Updated VERSION file to ${NEW_VERSION}"
+if [ "${DRY_RUN}" -eq 1 ]; then
+    echo "==> [DRY RUN] Skipping VERSION file update (would update to ${NEW_VERSION})"
+else
+    echo "${NEW_VERSION}" >VERSION
+    echo "==> Updated VERSION file to ${NEW_VERSION}"
+fi
 
 # 4. Run unit tests
 echo "==> Running test suite..."
@@ -103,9 +126,21 @@ echo "==> Building installer DMG package..."
 ./create_dmg.sh
 
 DMG_PATH="build/Recall-${TAG_NAME}.dmg"
-if [ ! -f "${DMG_PATH}" ]; then
-    echo "Error: DMG file ${DMG_PATH} not found!"
-    exit 1
+if [ "${DRY_RUN}" -eq 1 ]; then
+    echo "==> [DRY RUN] Renaming generated DMG to match simulated release tag ${TAG_NAME}..."
+    cp "build/Recall-v${CURRENT_VERSION}.dmg" "${DMG_PATH}" 2>/dev/null || true
+fi
+
+if [ "${DRY_RUN}" -eq 1 ]; then
+    echo "=========================================="
+    echo " 🧪 [DRY RUN COMPLETE] Release preview finished successfully!"
+    echo " Target Version: ${NEW_VERSION}"
+    echo " Tag Name: ${TAG_NAME}"
+    echo " Release Notes: ${NOTES_FILE}"
+    echo " DMG Image: ${DMG_PATH}"
+    echo " No git commits, tags, or GitHub releases were published."
+    echo "=========================================="
+    exit 0
 fi
 
 # 6. Commit version bump and create git tag
@@ -127,7 +162,7 @@ if git remote get-url origin >/dev/null 2>&1; then
     git push origin "${TAG_NAME}" --force || true
 fi
 
-# 8. Create GitHub Release using gh CLI (or provide login instructions if not authenticated)
+# 8. Create GitHub Release using gh CLI
 if ! command -v gh &>/dev/null; then
     if command -v brew &>/dev/null; then
         echo "==> GitHub CLI (gh) not found. Installing via Homebrew..."

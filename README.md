@@ -140,6 +140,9 @@ Output binary: `build/Recall-v1.0.0.dmg`.
 Run test verification, bump versioning, extract git commit changelogs, package a DMG, tag git, and publish a GitHub release:
 
 ```bash
+# Preview release notes and build DMG without committing, tagging, or publishing
+make release-dry-run
+
 # Auto-bump patch version and publish release
 make release
 

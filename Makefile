@@ -1,13 +1,13 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help build test coverage dmg release run launch revoke clean
+.PHONY: help build test coverage dmg release release-dry-run run launch revoke clean
 
 ## help: Display this help message
 help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@awk '/^##/ { printf "  \033[36m%-15s\033[0m %s\n", substr($$2, 1, length($$2)-1), substr($$0, index($$0, $$3)) }' $(MAKEFILE_LIST)
+	@awk '/^##/ { printf "  \033[36m%-20s\033[0m %s\n", substr($$2, 1, length($$2)-1), substr($$0, index($$0, $$3)) }' $(MAKEFILE_LIST)
 
 ## build: Compile Recall.app and sign binary
 build:
@@ -28,6 +28,10 @@ dmg: build
 ## release: Create version bump, generate release notes, tag git, build DMG, and publish GitHub release
 release:
 	@./release.sh $(VERSION)
+
+## release-dry-run: Simulate release note generation and DMG packaging without tagging or publishing
+release-dry-run:
+	@./release.sh $(VERSION) --dry-run
 
 
 
