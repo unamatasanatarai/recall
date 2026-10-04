@@ -1,176 +1,177 @@
 # Recall
 
-![Swift](https://img.shields.io/badge/Swift-5.7-orange.svg)
-![macOS](https://img.shields.io/badge/macOS-12.3%2B-blue.svg)
-![ScreenCaptureKit](https://img.shields.io/badge/framework-ScreenCaptureKit-purple.svg)
-![SwiftUI](https://img.shields.io/badge/framework-SwiftUI-blue.svg)
-![License](https://img.shields.io/badge/license-GPL--2.0-green.svg)
-![Build](https://img.shields.io/badge/build-Makefile-brightgreen.svg)
+### Never miss a moment with continuous retrospective screen capture on macOS.
 
-Recall is a lightweight macOS menu bar utility that provides continuous, background screen recording using native macOS capture frameworks (`CGDisplayStream` and `ScreenCaptureKit`). It maintains a rolling ring-buffer of high-efficiency H.264 video chunks with automated retention management based on user-defined storage and time limits.
+Recall is a lightweight macOS menu bar application that records your display continuously in the background using native Apple hardware acceleration. When an unexpected bug, highlight, or memorable moment occurs, simply drag downward from the menu bar icon to retroactively export high-quality video clips in seconds.
 
-By dragging downward from the menu bar icon, users can interactively select a retrospective timeframe and instantly export high-quality video clips. The app utilizes single-pass `ffmpeg` concatenation and trimming with an automatic `AVFoundation` fallback, delivering fast clip exports without manual video editing.
+<p align="center">
+  <img src="Resources/AppIcon.png" alt="Recall App Icon" width="160" />
+</p>
 
-## Features
+<p align="center">
+  <img src="https://img.shields.io/badge/Swift-5.7-orange.svg" alt="Swift 5.7" />
+  <img src="https://img.shields.io/badge/macOS-12.3%2B-blue.svg" alt="macOS 12.3+" />
+  <img src="https://img.shields.io/badge/framework-ScreenCaptureKit-purple.svg" alt="ScreenCaptureKit" />
+  <img src="https://img.shields.io/badge/framework-SwiftUI-blue.svg" alt="SwiftUI" />
+  <img src="https://img.shields.io/badge/license-GPL--2.0-green.svg" alt="GPL 2.0" />
+  <img src="https://img.shields.io/badge/build-Makefile-brightgreen.svg" alt="Build Makefile" />
+</p>
 
-- **Continuous Background Capture**: Records the main display at 30 FPS using `CGDisplayStream` and hardware-accelerated H.264 encoding via `AVAssetWriter` into 30-second rolling `.mp4` chunks.
-- **Zero-Copy Frame Pipeline**: Employs direct `IOSurface` pixel buffer binding (`CVPixelBufferCreateWithIOSurface`) for GPU-to-buffer frame pass-through, backed by a `CIContext` rendering fallback.
-- **Interactive Drag-to-Export HUD**: Visualizes retrospective recording selection via a custom translucent glassmorphism HUD beam overlay (`OverlayHUDWindow`) with real-time time offset calculations (`HUDTimeBadge`).
-- **Ring-Buffer Retention & Storage Limits**: `ChunkManager` automatically enforces maximum storage size and retention duration thresholds, purging the oldest video chunks when limits are reached.
-- **Single-Pass Lossless Clip Export**: Merges and trims selected chunks using `ffmpeg` (`concatAndTrim`), falling back to `AVMutableComposition` and `AVAssetExportSession` when `ffmpeg` is unavailable.
-- **TCC Permission Preservation**: Incremental compilation in `build.sh` checks source timestamps against compiled binaries to skip re-signing when code is unchanged, preventing macOS Screen Recording permission invalidation.
-- **Automated DMG Packaging**: Custom DMG generator (`create_dmg.sh` and `create_dmg_background.swift`) produces a styled installer volume with custom background graphics and pixel-aligned Finder icon placement.
-- **Automated Release Workflow**: `release.sh` automates version bumping, changelog extraction from git history, unit test verification, DMG packaging, git tagging, and GitHub release publishing (`gh release create`).
-- **Preferences & Analytics Panel**: SwiftUI interface for modifying export destinations, storage limits, and inspecting active clip metrics and disk usage in real time.
+---
 
-## Tech Stack
+## Why Recall?
 
-- **Language**: Swift 5.7
-- **Platform**: macOS 12.3+ (x86_64 architecture)
-- **Frameworks**: ScreenCaptureKit, AVFoundation, CoreMedia, CoreVideo, CoreImage, CoreGraphics, SwiftUI, AppKit
-- **External Tools**: `ffmpeg` (optional system binary for fast video concatenation and trimming), `gh` (optional GitHub CLI for release publishing)
-- **Build & Packaging**: Makefile, Bash (`build.sh`, `create_dmg.sh`, `release.sh`, `test.sh`), `swiftc`, `codesign`, `hdiutil` (DMG generation)
-- **Testing**: Custom Swift unit test runner with protocol-based dependency injection (`FileSystemProvider`, `StorageConfig`, `FFmpegRunner`, `VideoMetadataProvider`)
+Traditional screen recording forces you to predict when something important is going to happen. If you forget to hit record, fleeting bugs, unrepeatable software behavior, or unexpected presentation moments are lost forever. Conversely, keeping heavy screen recording tools running constantly drains system resources and clutters your storage.
 
-## Project Structure
+**Recall solves this by turning screen capture into an effortless retrospective safety net.**
 
-```text
-Sources/Recall/
-├── RecallApp.swift                   Application delegate and lifecycle management
-├── RecorderEngine.swift              CGDisplayStream capture and AVAssetWriter H.264 encoding pipeline
-├── ChunkManager.swift                Chunk storage persistence, retention enforcement, and video export
-├── MenuBarManager.swift              NSStatusItem setup, custom menu bar icon, and drag gesture tracking
-├── OverlayHUDWindow.swift            Full-screen translucent glassmorphism HUD beam overlay
-├── SettingsManager.swift             UserDefaults persistence for export paths and storage thresholds
-├── SettingsView.swift                SwiftUI preferences panel for storage and location configuration
-├── SettingsWindowController.swift   NSWindowController manager for preferences window
-└── Protocols.swift                   Abstraction protocols for file system, video metadata, and ffmpeg execution
+* **Silent & Weightless:** Runs continuously in the menu bar with zero-copy GPU frame handling, using minimal system resources.
+* **Instant Time Retrieval:** Drag downward from the menu bar at any moment to select and export what just happened.
+* **Controlled Disk Footprint:** Automatically manages storage with an automated rolling ring-buffer so disk space never overflows.
 
-Tests/RecallTests/
-├── TestRunner.swift                  Standalone unit test runner entry point
-├── ChunkManagerTests.swift           Unit tests for retention limit enforcement and purging
-├── SettingsManagerTests.swift        Unit tests for settings calculations and defaults
-└── Mocks.swift                       In-memory mocks for unit test isolation
+---
 
-Resources/
-├── AppIcon.icns / AppIcon.png        Application icon assets
-├── create_dmg_background.swift       Swift script generating custom DMG background graphics
-└── dmg_background.png                Generated background image for installer volume
+## Key Capabilities
 
-build.sh                              Compilation, ad-hoc signing, and Info.plist generation script
-create_dmg.sh                         Styled DMG installer packaging script
-release.sh                            Automated release, changelog, tagging, and GitHub publishing script
-test.sh                               Unit test compilation and execution script
-Makefile                              Build automation targets (help, build, test, dmg, release, run, launch, revoke, clean)
-Package.swift                         Swift Package Manager manifest
-VERSION                               Project version string
-```
+### Continuous Background Buffer
+Captures the main display continuously at 30 FPS using `CGDisplayStream` and hardware-accelerated H.264 encoding (`AVAssetWriter`) into rolling 30-second video chunks.
 
-## Installation
+### Drag-to-Export Glassmorphism HUD
+An interactive translucent beam (`OverlayHUDWindow`) appears when dragging down from the menu bar icon, calculating retroactive time offsets in real time with dynamic visual feedback.
 
-### Prerequisites
+### Zero-Copy Frame Pipeline
+Directly binds `IOSurface` pixel buffers (`CVPixelBufferCreateWithIOSurface`) for GPU-to-buffer frame pass-through, eliminating CPU-to-GPU copying overhead.
 
-- macOS 12.3 or later
-- Xcode Command Line Tools (`swiftc`, `xcrun`, `codesign`)
-- Optional: `ffmpeg` (installed via Homebrew or available in PATH)
+### Automated Retention Management
+`ChunkManager` monitors stored recording segments and automatically purges older chunks whenever user-defined storage limits (MB) or time thresholds (minutes) are reached.
 
-### Building from Source
+### Single-Pass Lossless Video Export
+Merges and trims selected chunks using `ffmpeg` stream copying without re-encoding, preserving original video quality and completing exports almost instantly. Includes an automatic `AVFoundation` fallback.
 
-Clone the repository and compile the application bundle using `make`:
+### TCC Permission Preservation
+Incremental build automation (`build.sh`) checks binary timestamps before signing, avoiding redundant re-signing and keeping macOS Screen Recording permissions valid between developer builds.
+
+---
+
+## Product Experience
+
+1. **Always-On Background Capture:** Recall launches quietly into your menu bar and maintains a continuous rolling history of your display activity.
+2. **Drag to Select History:** Click and drag downward from the Recall menu bar icon. The translucent glassmorphism HUD beam tracks your gesture and previews the retrospective duration (e.g., `-2 min`, `-5 min`).
+3. **Release to Export:** Release the mouse button. Recall immediately concatenates the relevant recording chunks and exports a crisp `.mp4` file directly to your designated folder.
+4. **Instant File Reveal:** The exported video file is automatically highlighted in Finder for immediate sharing or archiving.
+
+---
+
+## What Makes It Different
+
+* **Gesture-Driven Retrospective Export:** Instead of opening complex timeline editors, a quick downward drag from your status bar triggers clip generation.
+* **Hardware-Native Architecture:** Built on low-level macOS frameworks (`CGDisplayStream`, `IOSurface`, `AVFoundation`) for minimal impact on system performance.
+* **Smart Binary Timestamp Incremental Builds:** Resolves the common macOS developer friction point where re-compiling invalidates Screen Recording privacy permissions in System Settings.
+
+---
+
+## Primary Use Cases
+
+* **Bug Capture & Software QA:** Instantly extract video proof of hard-to-reproduce software bugs right after they occur.
+* **Meetings & Live Demos:** Save key segments from live presentations or virtual code reviews without recording hours of idle screen time.
+* **Content & Game Highlights:** Capture spontaneous moments or gameplay achievements retroactively.
+
+---
+
+## Quick Start
+
+### Download Pre-built Release
+
+Download the latest styled `.dmg` installer disk image directly from [GitHub Releases](https://github.com/unamatasanatarai/recall/releases/latest), open the volume, and drag `Recall.app` to your Applications folder.
+
+### Prerequisites (For Building From Source)
+
+* macOS 12.3 or later
+* Xcode Command Line Tools (`swiftc`, `codesign`)
+* Optional: `ffmpeg` (for single-pass stream copy export; `AVFoundation` is used as fallback)
+
+### Building & Running
+
+Clone the repository and compile Recall using `make`:
 
 ```bash
 git clone https://github.com/unamatasanatarai/recall.git
 cd recall
 make build
-```
-
-The compiled application bundle will be created at `build/Recall.app`.
-
-## Usage
-
-### Running the Application
-
-Launch the compiled app bundle:
-
-```bash
 make run
 ```
 
-To launch an existing build without recompiling (preserving TCC Screen Capture permissions):
+To launch a compiled build without recompiling (preserving macOS Screen Recording TCC permissions):
 
 ```bash
 make launch
 ```
 
-### Exporting Video Clips
+---
 
-1. Click and hold the Recall menu bar icon.
-2. Drag downward to select the desired retrospective clip duration (in 30-second steps up to total recorded duration).
-3. Release the mouse button. The clip will be exported to your designated export directory (`Recall_yyyy-MM-dd_HH-mm-ss.mp4`), and the file will be selected in Finder.
+## Developer Workflows
 
-### Packaging a DMG
+### Running Unit Tests & Coverage
 
-To create a styled `.dmg` disk image:
-
-```bash
-make dmg
-```
-
-The output file will be written to `build/Recall-v1.0.0.dmg`.
-
-### Automated Release Workflow
-
-To bump version, extract changelog from git commits, run tests, package DMG, tag git, and publish a release to GitHub:
-
-```bash
-# Auto-bump patch version
-make release
-
-# Specify a target version
-make release VERSION=1.1.0
-```
-
-### Resetting TCC Permissions
-
-If screen recording permissions need to be reset in macOS System Settings:
-
-```bash
-make revoke
-```
-
-## Configuration
-
-Configuration values are persisted via `UserDefaults` and editable through the Preferences window (`Cmd + ,` or right-clicking the menu bar icon):
-
-- **Export Location**: Directory where exported `.mp4` clips are saved. (Default: `~/Movies/Recall-exports`)
-- **Max Size (MB)**: Maximum disk space for stored video chunks. (Default: `1000 MB`)
-- **Max Time (Minutes)**: Maximum historical duration retained in memory/disk. (Default: `60 Minutes`)
-
-### Cache Directory & Logs
-
-- Video chunks are stored in `~/.cache/recall/chunks/` (or `$XDG_CACHE_HOME/recall/chunks/`).
-- Runtime debug logs are written to `~/.cache/recall/recall_debug.log` (automatically rotated when exceeding 10 MB).
-
-## Media Assets
-
-![Recall App Icon](Resources/AppIcon.png)
-
-## Tests
-
-The project includes unit tests covering `ChunkManager` purging logic and `SettingsManager` calculations.
-
-Run the test suite using `Makefile`:
+Execute the automated Swift test suite:
 
 ```bash
 make test
 ```
 
-Or execute the test script directly:
+Generate a code coverage summary:
 
 ```bash
-./test.sh
+make coverage
 ```
+
+### Packaging Installer DMG
+
+Create a styled `.dmg` installer volume with custom background graphics:
+
+```bash
+make dmg
+```
+
+Output binary: `build/Recall-v1.0.0.dmg`.
+
+### Automated Release Workflow
+
+Run test verification, bump versioning, extract git commit changelogs, package a DMG, tag git, and publish a GitHub release:
+
+```bash
+# Auto-bump patch version and publish release
+make release
+
+# Specify explicit release version
+make release VERSION=1.1.0
+```
+
+### Resetting TCC Permissions
+
+Reset macOS Screen Capture privacy settings during testing:
+
+```bash
+make revoke
+```
+
+---
+
+## Configuration
+
+Settings can be customized via the Preferences window (`Cmd + ,` or right-click menu bar icon):
+
+* **Export Location:** Output directory for exported clips. *(Default: `~/Movies/Recall-exports`)*
+* **Max Size (MB):** Maximum disk buffer capacity for stored video chunks. *(Default: `1000 MB`)*
+* **Max Time (Minutes):** Maximum historical time window retained. *(Default: `60 Minutes`)*
+
+### Cache & Logging
+
+* **Recording Chunks:** `~/.cache/recall/chunks/`
+* **Debug Logs:** `~/.cache/recall/recall_debug.log` *(automatically rotated at 10 MB)*
+
+---
 
 ## License
 
-This project is licensed under the terms of the GNU General Public License v2.0. See the [LICENSE](LICENSE) file for details.
+Licensed under the [GNU General Public License v2.0](LICENSE).
