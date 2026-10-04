@@ -17,6 +17,9 @@ final class SettingsManager: ObservableObject, @unchecked Sendable {
         return moviesDir.appendingPathComponent("Recall-exports")
     }
 
+    static let defaultMaxStorageMB = 1000
+    static let defaultMaxStorageMinutes = 60
+
     var onSettingsChanged: (() -> Void)?
 
     @Published var exportsDirectoryPath: String {
@@ -40,18 +43,25 @@ final class SettingsManager: ObservableObject, @unchecked Sendable {
     }
 
     private init() {
-        let savedPath = defaults.string(forKey: Keys.exportsDirectoryPath)
-        if let savedPath = savedPath, !savedPath.isEmpty {
+        if let savedPath = defaults.string(forKey: Keys.exportsDirectoryPath), !savedPath.isEmpty {
             self.exportsDirectoryPath = savedPath
         } else {
             self.exportsDirectoryPath = SettingsManager.defaultExportsDirectory.path
         }
 
         let savedMB = defaults.integer(forKey: Keys.maxStorageMB)
-        self.maxStorageMB = savedMB > 0 ? savedMB : 1000 // Default 1000 MB (1 GB)
+        if savedMB > 0 {
+            self.maxStorageMB = savedMB
+        } else {
+            self.maxStorageMB = SettingsManager.defaultMaxStorageMB
+        }
 
         let savedMin = defaults.integer(forKey: Keys.maxStorageMinutes)
-        self.maxStorageMinutes = savedMin > 0 ? savedMin : 60 // Default 60 Minutes (1 Hour)
+        if savedMin > 0 {
+            self.maxStorageMinutes = savedMin
+        } else {
+            self.maxStorageMinutes = SettingsManager.defaultMaxStorageMinutes
+        }
     }
 
     var exportsDirectoryURL: URL {
@@ -71,7 +81,7 @@ final class SettingsManager: ObservableObject, @unchecked Sendable {
 
     func resetToDefaults() {
         exportsDirectoryPath = SettingsManager.defaultExportsDirectory.path
-        maxStorageMB = 1000
-        maxStorageMinutes = 60
+        maxStorageMB = SettingsManager.defaultMaxStorageMB
+        maxStorageMinutes = SettingsManager.defaultMaxStorageMinutes
     }
 }

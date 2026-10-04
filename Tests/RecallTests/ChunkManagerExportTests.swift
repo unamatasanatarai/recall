@@ -27,6 +27,7 @@ struct ChunkManagerExportTests {
         while !completed && Date() < timeout {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
+        manager.syncQueue()
 
         if !completed || exportedResultURL != nil {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected nil export URL when store is empty"])
@@ -71,6 +72,7 @@ struct ChunkManagerExportTests {
         while !completed && Date() < timeout {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
+        manager.syncQueue()
 
         if !completed || exportedURL == nil {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Export clip timed out or returned nil URL"])
@@ -105,6 +107,7 @@ struct ChunkManagerExportTests {
         while !completed && Date() < timeout {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
+        manager.syncQueue()
 
         if !completed {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Export completion was not invoked"])
@@ -133,6 +136,7 @@ struct ChunkManagerExportTests {
         CVPixelBufferCreate(kCFAllocatorDefault, 320, 240, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
         if let pb = pixelBuffer {
             adaptor.append(pb, withPresentationTime: CMTime.zero)
+            adaptor.append(pb, withPresentationTime: CMTime(seconds: 2.0, preferredTimescale: 600))
         }
         input.markAsFinished()
 
@@ -157,7 +161,7 @@ struct ChunkManagerExportTests {
             chunksDirectory: tempDir
         )
 
-        manager.registerChunk(url: chunkURL, startTime: Date().addingTimeInterval(-10), duration: 1.0)
+        manager.registerChunk(url: chunkURL, startTime: Date().addingTimeInterval(-10), duration: 2.0)
 
         var completed = false
         manager.exportClip(offsetSeconds: 1.0) { _ in
@@ -168,5 +172,6 @@ struct ChunkManagerExportTests {
         while !completed && Date() < timeout {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
+        manager.syncQueue()
     }
 }

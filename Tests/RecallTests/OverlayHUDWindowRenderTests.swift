@@ -30,18 +30,15 @@ struct OverlayHUDWindowRenderTests {
     }
 
     static func testSubMinuteHUDTimeFormatting() throws {
-        let formatTime = { (seconds: TimeInterval) -> String in
-            let mins = max(0.5, seconds / 60.0)
-            if mins.truncatingRemainder(dividingBy: 1.0) == 0 {
-                return String(format: "%.0fm", mins)
-            } else {
-                return String(format: "%.1fm", mins)
-            }
+        let testDate = Date(timeIntervalSince1970: 1700000000)
+        let res = OverlayHUDBeamView.formatTimeOffset(15.0, referenceDate: testDate)
+        if !res.contains("(-0.5min)") {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected (-0.5min) for sub-minute 15s offset, got \(res)"])
         }
 
-        let res = formatTime(15.0) // 15s -> clamped to 0.5m
-        if res != "0.5m" {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected 0.5m for sub-minute 15s offset, got \(res)"])
+        let res2 = OverlayHUDBeamView.formatTimeOffset(120.0, referenceDate: testDate)
+        if !res2.contains("(-2min)") {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected (-2min) for 120s offset, got \(res2)"])
         }
     }
 
@@ -61,6 +58,13 @@ struct OverlayHUDWindowRenderTests {
         let view = OverlayHUDBeamView(viewModel: viewModel)
         let hostingView = NSHostingView(rootView: view)
         hostingView.frame = NSRect(x: 0, y: 0, width: 500, height: 500)
+        _ = hostingView.fittingSize
+    }
+
+    static func testRenderHUDTimeBadge() throws {
+        let badge = HUDTimeBadge(timeText: "14:29 (-2min)")
+        let hostingView = NSHostingView(rootView: badge)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 200, height: 50)
         _ = hostingView.fittingSize
     }
 }

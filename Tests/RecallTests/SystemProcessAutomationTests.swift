@@ -20,6 +20,7 @@ struct SystemProcessAutomationTests {
         let delegate = AppDelegate()
         let notif = Notification(name: Notification.Name("testNotification"))
         delegate.applicationDidFinishLaunching(notif)
+        SettingsManager.shared.onSettingsChanged?()
         delegate.applicationWillTerminate(notif)
     }
 

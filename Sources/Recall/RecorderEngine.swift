@@ -29,7 +29,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
     private var isWriterSessionStarted = false
     var chunkStartTimeSeconds: CFTimeInterval = 0
     private let ciContext = CIContext()
-    private let segmentDurationThreshold: TimeInterval = 30.0
+    private let segmentDurationThreshold: TimeInterval = 60.0
 
     private let logFileURL: URL
     private let chunkStore: ChunkStore
@@ -98,14 +98,17 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
 
             permissionTimer?.invalidate()
             permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-                guard let self = self else { return }
-                if self.permissionProvider.preflightAccess() {
-                    self.log("Screen capture permission granted!")
-                    self.permissionTimer?.invalidate()
-                    self.permissionTimer = nil
-                    self.beginStreamCapture()
-                }
+                self?.handlePermissionTimerCheck()
             }
+        }
+    }
+
+    func handlePermissionTimerCheck() {
+        if permissionProvider.preflightAccess() {
+            log("Screen capture permission granted!")
+            permissionTimer?.invalidate()
+            permissionTimer = nil
+            beginStreamCapture()
         }
     }
 
@@ -286,7 +289,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
 
         oldInput.markAsFinished()
         oldWriter.finishWriting {
-            if oldWriter.status == .completed && frameCount > 0 {
+            if (oldWriter.status == .completed || oldWriter.status == .unknown) && frameCount > 0 {
                 self.chunkStore.registerChunk(url: oldURL, startTime: startTime, duration: duration)
             } else {
                 try? FileManager.default.removeItem(at: oldURL)
@@ -314,7 +317,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
             input.markAsFinished()
 
             writer.finishWriting {
-                if writer.status == .completed && frameCount > 0 {
+                if (writer.status == .completed || writer.status == .unknown) && frameCount > 0 {
                     self.chunkStore.registerChunk(url: url, startTime: startTime, duration: duration)
                 } else {
                     try? FileManager.default.removeItem(at: url)
@@ -342,7 +345,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
                 let count = self.framesWrittenInChunk
                 input.markAsFinished()
                 writer.finishWriting {
-                    if writer.status == .completed && count > 0 {
+                    if (writer.status == .completed || writer.status == .unknown) && count > 0 {
                         self.chunkStore.registerChunk(url: url, startTime: startTime, duration: duration)
                     }
                 }
@@ -378,5 +381,9 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
                 try? data.write(to: logFileURL)
             }
         }
+    }
+
+    func syncQueue() {
+        recordingQueue.sync {}
     }
 }

@@ -34,7 +34,6 @@ final class MenuBarManager: NSObject {
             button.image = createMenuBarIcon()
         }
 
-        setupContextMenu()
         setupDragGestureTracking()
     }
 
@@ -144,18 +143,6 @@ final class MenuBarManager: NSObject {
         return icon
     }
 
-    private func setupContextMenu() {
-        let menu = NSMenu()
-
-        let settingsItem = NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-
-        let quitItem = NSMenuItem(title: "Quit Recall", action: #selector(quitApp), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
-        statusItem?.menu = nil // Shown only on right click or menu trigger
-    }
 
     @objc func openSettings() {
         SettingsWindowController.shared.showWindow()
@@ -167,9 +154,11 @@ final class MenuBarManager: NSObject {
         }
     }
 
+    var appTerminator: () -> Void = { NSApplication.shared.terminate(nil) }
+
     @objc func quitApp() {
         recorder.stopStream()
-        NSApplication.shared.terminate(nil)
+        appTerminator()
     }
 
     @discardableResult
@@ -196,13 +185,13 @@ final class MenuBarManager: NSObject {
                 let dy = self.dragStartLocation.y - mouseLocation.y
                 if dy > 0 {
                     let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
-                    let maxDragDistance = max(200.0, screenHeight * 0.75)
+                    let maxDragDistance = max(200.0, screenHeight * 0.5)
                     let clampedDy = min(maxDragDistance, dy)
                     let progress = min(1.0, max(0.0, clampedDy / maxDragDistance))
 
                     let maxDuration = self.chunkStore.totalRecordedDuration
                     let rawSeconds = progress * maxDuration
-                    let steppedSeconds = max(30.0, round(rawSeconds / 30.0) * 30.0)
+                    let steppedSeconds = max(60.0, round(rawSeconds / 60.0) * 60.0)
                     let finalSeconds = min(maxDuration, steppedSeconds)
                     self.selectedOffsetSeconds = finalSeconds
 
@@ -247,8 +236,8 @@ final class MenuBarManager: NSObject {
         }
     }
 
-    func showContextMenu() {
-        guard let button = statusItem?.button else { return }
+    func showContextMenu(button overrideButton: NSButton? = nil) {
+        guard let button = overrideButton ?? statusItem?.button, button.window != nil else { return }
         let menu = NSMenu()
 
         let settingsItem = NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: ",")
@@ -261,19 +250,18 @@ final class MenuBarManager: NSObject {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
     }
 
-    func triggerExport(offsetSeconds: TimeInterval) {
-        if let button = statusItem?.button {
+    func triggerExport(offsetSeconds: TimeInterval, overrideButton: NSButton? = nil) {
+        let button = overrideButton ?? statusItem?.button
+        if let button = button {
             button.contentTintColor = .systemRed
         }
 
-        chunkStore.exportClip(offsetSeconds: offsetSeconds) { [weak self] exportedURL in
+        chunkStore.exportClip(offsetSeconds: offsetSeconds) { exportedURL in
             if let url = exportedURL {
                 NSSound.beep()
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                self?.statusItem?.button?.contentTintColor = nil
-            }
+            button?.contentTintColor = nil
         }
     }
 }

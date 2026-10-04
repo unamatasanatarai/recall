@@ -20,6 +20,7 @@ final class ChunkManager: ChunkStore, @unchecked Sendable {
     private let fileSystem: FileSystemProvider
     private let ffmpegRunner: FFmpegRunner
     private let metadataProvider: VideoMetadataProvider
+    private let exportSessionFactory: (AVAsset, String) -> AVAssetExportSession?
 
     private static let exportDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -38,12 +39,14 @@ final class ChunkManager: ChunkStore, @unchecked Sendable {
         fileSystem: FileSystemProvider = FileManager.default,
         ffmpegRunner: FFmpegRunner = DefaultFFmpegRunner(),
         metadataProvider: VideoMetadataProvider = DefaultVideoMetadataProvider(),
+        exportSessionFactory: @escaping (AVAsset, String) -> AVAssetExportSession? = { AVAssetExportSession(asset: $0, presetName: $1) },
         chunksDirectory: URL? = nil
     ) {
         self.config = config
         self.fileSystem = fileSystem
         self.ffmpegRunner = ffmpegRunner
         self.metadataProvider = metadataProvider
+        self.exportSessionFactory = exportSessionFactory
 
         if let overrideDir = chunksDirectory {
             self.chunksDirectory = overrideDir
@@ -228,10 +231,7 @@ final class ChunkManager: ChunkStore, @unchecked Sendable {
 
                 // Fallback: AVMutableComposition with re-encoding
                 let composition = AVMutableComposition()
-                guard let compVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-                    DispatchQueue.main.async { completion(nil) }
-                    return
-                }
+                let compVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
 
                 var insertTime = CMTime.zero
 
@@ -248,31 +248,34 @@ final class ChunkManager: ChunkStore, @unchecked Sendable {
                     let durationInChunk = CMTimeSubtract(assetDuration, startTimeInChunk)
                     if CMTimeCompare(durationInChunk, .zero) > 0 {
                         let range = CMTimeRange(start: startTimeInChunk, duration: durationInChunk)
-                        try? compVideoTrack.insertTimeRange(range, of: assetVideoTrack, at: insertTime)
+                        try? compVideoTrack?.insertTimeRange(range, of: assetVideoTrack, at: insertTime)
                         insertTime = CMTimeAdd(insertTime, durationInChunk)
                     }
                 }
 
-                guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
-                    DispatchQueue.main.async { completion(nil) }
-                    return
-                }
+                if let exportSession = self.exportSessionFactory(composition, AVAssetExportPresetHighestQuality) {
+                    exportSession.outputURL = exportURL
+                    exportSession.outputFileType = .mp4
 
-                exportSession.outputURL = exportURL
-                exportSession.outputFileType = .mp4
-
-                exportSession.exportAsynchronously {
-                    DispatchQueue.main.async {
-                        if exportSession.status == .completed {
-                            print("[ChunkManager] Fallback clip exported successfully: \(exportURL.path)")
-                            completion(exportURL)
-                        } else {
-                            print("[ChunkManager] Fallback export failed: \(String(describing: exportSession.error))")
-                            completion(nil)
+                    exportSession.exportAsynchronously {
+                        DispatchQueue.main.async {
+                            if exportSession.status == .completed {
+                                print("[ChunkManager] Fallback clip exported successfully: \(exportURL.path)")
+                                completion(exportURL)
+                            } else {
+                                print("[ChunkManager] Fallback export failed: \(String(describing: exportSession.error))")
+                                completion(nil)
+                            }
                         }
                     }
+                } else {
+                    DispatchQueue.main.async { completion(nil) }
                 }
             }
         }
+    }
+
+    func syncQueue() {
+        queue.sync {}
     }
 }

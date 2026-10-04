@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import SwiftUI
 
 struct SettingsViewTests {
     static func testUsageStatsFormatting() throws {
@@ -67,6 +69,15 @@ struct SettingsViewTests {
         if !purgedCalled {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected onPurgeRecordings callback to execute"])
         }
+    }
+
+    static func testRenderSettingsView() throws {
+        let settings = SettingsManager.shared
+        let view = SettingsView(settings: settings, openPanelPresenter: MockOpenPanelPresenter())
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        _ = hosting.fittingSize
+        view.chooseDirectory()
     }
 }
 

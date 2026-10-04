@@ -267,7 +267,7 @@ struct ChunkManagerTests {
         manager.registerChunk(url: c2, startTime: Date().addingTimeInterval(-60), duration: 30)
         manager.registerChunk(url: c3, startTime: Date().addingTimeInterval(-30), duration: 30)
 
-        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        manager.syncQueue()
 
         if !fileSystem.removedURLs.contains(c1) || !fileSystem.removedURLs.contains(c2) {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Sequential multi-chunk purge failed"])

@@ -38,9 +38,9 @@ struct MenuBarManagerTests {
 
     static func testStepQuantization() throws {
         let rawSeconds: TimeInterval = 85.0
-        let quantized = (rawSeconds / 30.0).rounded() * 30.0
-        if quantized != 90.0 {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected 90.0s for 85.0s raw input, got \(quantized)"])
+        let quantized = (rawSeconds / 60.0).rounded() * 60.0
+        if quantized != 60.0 {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected 60.0s for 85.0s raw input, got \(quantized)"])
         }
     }
 
@@ -57,6 +57,23 @@ struct MenuBarManagerTests {
 
         if !exportCalled {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected exportClip to be callable on drag release"])
+        }
+    }
+
+    static func testShowContextMenuAndSettings() throws {
+        let recorder = MockScreenCapture()
+        let store = MockChunkStore()
+        let manager = MenuBarManager(recorder: recorder, chunkStore: store)
+        manager.setupMenuBar()
+        manager.openSettings()
+        let btn = NSButton()
+        manager.showContextMenu(button: btn)
+        manager.triggerExport(offsetSeconds: 60, overrideButton: btn)
+        var termCalled = false
+        manager.appTerminator = { termCalled = true }
+        manager.quitApp()
+        if !termCalled {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected quitApp to terminate"])
         }
     }
 }

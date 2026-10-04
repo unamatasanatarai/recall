@@ -100,7 +100,7 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary.opacity(0.8))
                         }
                         .buttonStyle(.plain)
-                        .help("Reset Max Size to default (1000 MB)")
+                        .help("Reset Max Size to default (\(SettingsManager.defaultMaxStorageMB) MB)")
                     }
 
                     Spacer()
@@ -153,7 +153,7 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary.opacity(0.8))
                         }
                         .buttonStyle(.plain)
-                        .help("Reset Max Time to default (60 Minutes)")
+                        .help("Reset Max Time to default (\(SettingsManager.defaultMaxStorageMinutes) Minutes)")
                     }
 
                     Spacer()
@@ -190,11 +190,11 @@ struct SettingsView: View {
     }
 
     func resetStorageMB() {
-        settings.maxStorageMB = 1000
+        settings.maxStorageMB = SettingsManager.defaultMaxStorageMB
     }
 
     func resetStorageMinutes() {
-        settings.maxStorageMinutes = 60
+        settings.maxStorageMinutes = SettingsManager.defaultMaxStorageMinutes
     }
 
     private func updateUsageStats() {

@@ -196,6 +196,9 @@ struct TestRunner {
         runTest("MenuBarManager.testDragReleaseExportTrigger") {
             try MenuBarManagerTests.testDragReleaseExportTrigger()
         }
+        runTest("MenuBarManager.testShowContextMenuAndSettings") {
+            try MenuBarManagerTests.testShowContextMenuAndSettings()
+        }
 
         // --- Section 10: SettingsViewTests ---
         runTest("SettingsView.testUsageStatsFormatting") {
@@ -212,6 +215,9 @@ struct TestRunner {
         }
         runTest("SettingsView.testResetStorageDefaults") {
             try SettingsViewTests.testResetStorageDefaults()
+        }
+        runTest("SettingsView.testRenderSettingsView") {
+            try SettingsViewTests.testRenderSettingsView()
         }
 
         // --- Section 11: ConcurrencyTests ---
@@ -315,6 +321,9 @@ struct TestRunner {
         runTest("RecorderEngineDeepCoverage.testHandleFrameWithIOSurface") {
             try RecorderEngineDeepCoverageTests.testHandleFrameWithIOSurface()
         }
+        runTest("RecorderEngineDeepCoverage.testHandlePermissionTimerCheck") {
+            try RecorderEngineDeepCoverageTests.testHandlePermissionTimerCheck()
+        }
 
         // --- Section 17: ChunkManagerAdvancedExportTests ---
         runTest("ChunkManagerAdvancedExport.testSubSecondTargetClamping") {
@@ -325,6 +334,9 @@ struct TestRunner {
         }
         runTest("ChunkManagerAdvancedExport.testSingleNewestChunkOverLimitPurge") {
             try ChunkManagerAdvancedExportTests.testSingleNewestChunkOverLimitPurge()
+        }
+        runTest("ChunkManagerAdvancedExport.testChunkManagerCoverageEdges") {
+            try ChunkManagerAdvancedExportTests.testChunkManagerCoverageEdges()
         }
 
         // --- Section 18: OverlayHUDWindowRenderTests ---
@@ -342,6 +354,9 @@ struct TestRunner {
         }
         runTest("OverlayHUDWindowRender.testRenderOverlayHUDBeamView") {
             try OverlayHUDWindowRenderTests.testRenderOverlayHUDBeamView()
+        }
+        runTest("OverlayHUDWindowRender.testRenderHUDTimeBadge") {
+            try OverlayHUDWindowRenderTests.testRenderHUDTimeBadge()
         }
 
         // --- Section 19: MenuBarPreferencesIntegrationTests ---
@@ -389,6 +404,20 @@ struct TestRunner {
         }
         runTest("SystemProcessAutomation.testRecallAppInstantiation") {
             try SystemProcessAutomationTests.testRecallAppInstantiation()
+        }
+
+        // --- Section 21: DefaultProtocolsCoverageTests ---
+        runTest("DefaultProtocolsCoverage.testDefaultScreenCapturePermissionProvider") {
+            try DefaultProtocolsCoverageTests.testDefaultScreenCapturePermissionProvider()
+        }
+        runTest("DefaultProtocolsCoverage.testDefaultAlertPresenter") {
+            try DefaultProtocolsCoverageTests.testDefaultAlertPresenter()
+        }
+        runTest("DefaultProtocolsCoverage.testDefaultOpenPanelPresenter") {
+            try DefaultProtocolsCoverageTests.testDefaultOpenPanelPresenter()
+        }
+        runTest("DefaultProtocolsCoverage.testDefaultFFmpegRunnerConcatAndTrim") {
+            try DefaultProtocolsCoverageTests.testDefaultFFmpegRunnerConcatAndTrim()
         }
 
         print("\nSummary: \(passedCount) passed, \(failedCount) failed.\n")

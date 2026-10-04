@@ -94,10 +94,6 @@ struct TaperedBeamShape: Shape {
 struct OverlayHUDBeamView: View {
     @ObservedObject var viewModel: HUDViewModel
 
-    private let electricBlue = Color(red: 0.05, green: 0.5, blue: 1.0)
-    private let neonCyan = Color(red: 0.2, green: 0.85, blue: 1.0)
-    private let deepBlue = Color(red: 0.0, green: 0.35, blue: 0.95)
-
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
@@ -112,7 +108,11 @@ struct OverlayHUDBeamView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        let electricBlue = Color(red: 0.05, green: 0.5, blue: 1.0)
+        let neonCyan = Color(red: 0.2, green: 0.85, blue: 1.0)
+        let deepBlue = Color(red: 0.0, green: 0.35, blue: 0.95)
+
+        return ZStack(alignment: .topLeading) {
             // Layer 1: Ambient Glow Blur
             TaperedBeamShape(
                 startPoint: viewModel.startPoint,
@@ -197,37 +197,37 @@ struct OverlayHUDBeamView: View {
             .position(x: viewModel.currentPoint.x, y: viewModel.currentPoint.y)
 
             // macOS Glassmorphism HUD Badge
-            HUDTimeBadge(timeText: formatTimeOffset(viewModel.offsetSeconds))
+            HUDTimeBadge(timeText: OverlayHUDBeamView.formatTimeOffset(viewModel.offsetSeconds))
                 .position(x: viewModel.currentPoint.x + 95, y: viewModel.currentPoint.y + 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func formatTimeOffset(_ seconds: TimeInterval) -> String {
+    static func formatTimeOffset(_ seconds: TimeInterval, referenceDate: Date = Date()) -> String {
         let mins = max(0.5, seconds / 60.0)
         let minsFormatted: String
         if mins.truncatingRemainder(dividingBy: 1.0) == 0 {
-            minsFormatted = String(format: "%.0fm", mins)
+            minsFormatted = String(format: "%.0f", mins)
         } else {
-            minsFormatted = String(format: "%.1fm", mins)
+            minsFormatted = String(format: "%.1f", mins)
         }
 
-        let now = Date()
         let roundedMins = (seconds / 60.0).rounded()
-        let targetDate = Date(timeIntervalSince1970: now.timeIntervalSince1970 - (roundedMins * 60.0))
+        let targetDate = Date(timeIntervalSince1970: referenceDate.timeIntervalSince1970 - (roundedMins * 60.0))
         let clockTime = OverlayHUDBeamView.timeFormatter.string(from: targetDate)
 
-        return "\(minsFormatted) ago - \(clockTime)"
+        return "\(clockTime) (-\(minsFormatted)min)"
     }
 }
 
 struct HUDTimeBadge: View {
     let timeText: String
-    private let neonCyan = Color(red: 0.2, green: 0.85, blue: 1.0)
-    private let electricBlue = Color(red: 0.05, green: 0.5, blue: 1.0)
 
     var body: some View {
-        HStack(spacing: 6) {
+        let neonCyan = Color(red: 0.2, green: 0.85, blue: 1.0)
+        let electricBlue = Color(red: 0.05, green: 0.5, blue: 1.0)
+
+        return HStack(spacing: 6) {
             Image(systemName: "clock.arrow.circlepath")
                 .font(.caption.weight(.bold))
                 .foregroundColor(neonCyan)

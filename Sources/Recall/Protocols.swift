@@ -45,6 +45,15 @@ protocol FFmpegRunner {
 }
 
 struct DefaultFFmpegRunner: FFmpegRunner {
+    var processRunner: (URL, [String]) -> Int32 = { execURL, args in
+        let proc = Process()
+        proc.executableURL = execURL
+        proc.arguments = args
+        try? proc.run()
+        proc.waitUntilExit()
+        return proc.terminationStatus
+    }
+
     func findFFmpegPath(fileSystem: FileSystemProvider = FileManager.default) -> String? {
         let candidates = [
             "/usr/local/bin/ffmpeg",
@@ -73,17 +82,13 @@ struct DefaultFFmpegRunner: FFmpegRunner {
     }
 
     func concatAndTrim(listURL: URL, outputURL: URL, excessSeconds: Double, ffmpegPath: String) -> Bool {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: ffmpegPath)
         var args = ["-hide_banner", "-loglevel", "error", "-y"]
         if excessSeconds > 0.05 {
             args += ["-ss", String(format: "%.3f", excessSeconds)]
         }
         args += ["-f", "concat", "-safe", "0", "-i", listURL.path, "-c", "copy", outputURL.path]
-        proc.arguments = args
-        try? proc.run()
-        proc.waitUntilExit()
-        return proc.terminationStatus == 0
+        let status = processRunner(URL(fileURLWithPath: ffmpegPath), args)
+        return status == 0
     }
 }
 
@@ -113,11 +118,14 @@ protocol ScreenCapturePermissionProvider {
 }
 
 struct DefaultScreenCapturePermissionProvider: ScreenCapturePermissionProvider {
+    var preflight: () -> Bool = { CGPreflightScreenCaptureAccess() }
+    var request: () -> Bool = { CGRequestScreenCaptureAccess() }
+
     func preflightAccess() -> Bool {
-        return CGPreflightScreenCaptureAccess()
+        return preflight()
     }
     func requestAccess() -> Bool {
-        return CGRequestScreenCaptureAccess()
+        return request()
     }
 }
 
@@ -127,6 +135,11 @@ protocol AlertPresenter {
 }
 
 struct DefaultAlertPresenter: AlertPresenter {
+    var modalRunner: (NSAlert) -> NSApplication.ModalResponse = { alert in
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal()
+    }
+
     func confirmPurgeRecordings() -> Bool {
         let alert = NSAlert()
         alert.messageText = "Purge Stored Recordings?"
@@ -135,8 +148,7 @@ struct DefaultAlertPresenter: AlertPresenter {
         alert.addButton(withTitle: "Purge All")
         alert.addButton(withTitle: "Cancel")
 
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn
+        return modalRunner(alert) == .alertFirstButtonReturn
     }
 }
 
@@ -146,6 +158,14 @@ protocol OpenPanelPresenter {
 }
 
 struct DefaultOpenPanelPresenter: OpenPanelPresenter {
+    var windowFetcher: () -> NSWindow? = { NSApp.keyWindow }
+    var sheetRunner: (NSOpenPanel, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void = { panel, window, completion in
+        panel.beginSheetModal(for: window, completionHandler: completion)
+    }
+    var modalRunner: (NSOpenPanel) -> NSApplication.ModalResponse = { panel in
+        panel.runModal()
+    }
+
     func chooseDirectory(completion: @escaping (String?) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -154,20 +174,12 @@ struct DefaultOpenPanelPresenter: OpenPanelPresenter {
         panel.canCreateDirectories = true
         panel.prompt = "Select Export Folder"
 
-        if let window = NSApp.keyWindow {
-            panel.beginSheetModal(for: window) { response in
-                if response == .OK, let url = panel.url {
-                    completion(url.path)
-                } else {
-                    completion(nil)
-                }
+        if let window = windowFetcher() {
+            sheetRunner(panel, window) { response in
+                completion(response == .OK ? panel.url?.path : nil)
             }
         } else {
-            if panel.runModal() == .OK, let url = panel.url {
-                completion(url.path)
-            } else {
-                completion(nil)
-            }
+            completion(modalRunner(panel) == .OK ? panel.url?.path : nil)
         }
     }
 }

@@ -177,11 +177,12 @@ struct RecorderEngineDeepCoverageTests {
 
         try engine.startNewChunk(width: 640, height: 480)
 
-        // Simulate chunk running for over segmentDurationThreshold (30 seconds)
-        engine.chunkStartTimeSeconds = CACurrentMediaTime() - 35.0
+        // Simulate chunk running for over segmentDurationThreshold (60 seconds)
+        engine.chunkStartTimeSeconds = CACurrentMediaTime() - 65.0
 
         // handleFrame should trigger rotateChunk
         engine.handleFrame(status: .frameComplete, displayTime: 35, surface: nil, width: 640, height: 480)
+        engine.syncQueue()
     }
 
     static func testHandleFrameWithIOSurface() throws {
@@ -207,6 +208,7 @@ struct RecorderEngineDeepCoverageTests {
 
             // Second frame appends with active session
             engine.handleFrame(status: .frameComplete, displayTime: 2, surface: surface, width: 640, height: 480)
+            engine.syncQueue()
         }
 
         // Flush active chunk so finishWriting completes with framesWrittenInChunk > 0
@@ -217,6 +219,14 @@ struct RecorderEngineDeepCoverageTests {
         }
         _ = flushExpectation.wait(until: Date().addingTimeInterval(3.0))
         flushExpectation.unlock()
+        engine.syncQueue()
+    }
+
+    static func testHandlePermissionTimerCheck() throws {
+        let store = MockChunkStore()
+        let permission = MockScreenCapturePermissionProvider(isGranted: true)
+        let engine = RecorderEngine(chunkStore: store, permissionProvider: permission)
+        engine.handlePermissionTimerCheck()
     }
 }
 
