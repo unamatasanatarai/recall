@@ -112,6 +112,14 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
         }
     }
 
+    static func createStreamProperties() -> [CFString: Any] {
+        return [
+            CGDisplayStream.minimumFrameTime: (1.0 / 30.0) as CFNumber,
+            CGDisplayStream.showCursor: true as CFBoolean,
+            CGDisplayStream.queueDepth: 5 as CFNumber
+        ]
+    }
+
     @discardableResult
     func beginStreamCapture() -> Bool {
         if displayStream != nil {
@@ -127,14 +135,13 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
         do {
             try startNewChunk(width: width, height: height)
 
+            let properties = RecorderEngine.createStreamProperties()
             let stream = CGDisplayStream(
                 display: mainID,
                 outputWidth: width,
                 outputHeight: height,
                 pixelFormat: Int32(kCVPixelFormatType_32BGRA),
-                properties: [
-                    CGDisplayStream.minimumFrameTime: (1.0 / 30.0) as CFNumber
-                ] as CFDictionary
+                properties: properties as CFDictionary
             ) { [weak self] status, displayTime, frameSurface, updateRef in
                 guard let self = self else { return }
                 // Hand frame processing off to the dedicated high-priority queue immediately

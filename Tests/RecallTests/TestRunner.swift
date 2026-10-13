@@ -162,6 +162,9 @@ struct TestRunner {
         runTest("RecorderEngine.testStopStreamAction") {
             try RecorderEngineTests.testStopStreamAction()
         }
+        runTest("RecorderEngine.testStreamPropertiesIncludeCursor") {
+            try RecorderEngineTests.testStreamPropertiesIncludeCursor()
+        }
 
         // --- Section 8: OverlayHUDWindowTests ---
         runTest("OverlayHUDWindow.testHUDWindowProperties") {

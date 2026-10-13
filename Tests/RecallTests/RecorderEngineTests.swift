@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 struct RecorderEngineTests {
     static func testInitialIdleState() throws {
@@ -64,6 +65,17 @@ struct RecorderEngineTests {
 
         if engine.state != .idle {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected state .idle after stopStream"])
+        }
+    }
+
+    static func testStreamPropertiesIncludeCursor() throws {
+        let props = RecorderEngine.createStreamProperties()
+        guard let showCursorVal = props[CGDisplayStream.showCursor] else {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "showCursor property missing from stream properties"])
+        }
+        let isTrue = (showCursorVal as? Bool) == true
+        if !isTrue {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "showCursor must be true to record cursor"])
         }
     }
 }

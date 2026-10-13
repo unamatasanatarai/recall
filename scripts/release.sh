@@ -119,11 +119,11 @@ fi
 
 # 4. Run unit tests
 echo "==> Running test suite..."
-./test.sh
+./scripts/test.sh
 
 # 5. Build application & DMG package
 echo "==> Building installer DMG package..."
-./create_dmg.sh
+./scripts/build_dmg.sh
 
 DMG_PATH="build/Recall-${TAG_NAME}.dmg"
 if [ "${DRY_RUN}" -eq 1 ]; then

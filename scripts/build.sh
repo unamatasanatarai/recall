@@ -29,7 +29,7 @@ BINARY="build/Recall.app/Contents/MacOS/Recall"
 # invalidates the grant. We avoid this by skipping compile+sign when
 # the sources haven't changed.
 NEEDS_BUILD=true
-if [ -f "${BINARY}" ]; then
+if [ -f "${BINARY}" ] && [ -f "build/Recall.app/Contents/Info.plist" ]; then
     NEWEST_SOURCE=$(find Sources/Recall -name '*.swift' -newer "${BINARY}" 2>/dev/null | head -n 1)
     if [ -z "${NEWEST_SOURCE}" ]; then
         NEEDS_BUILD=false
@@ -54,18 +54,8 @@ if [ "${NEEDS_BUILD}" = true ]; then
         Sources/Recall/*.swift \
         -o "${BINARY}"
 
-    echo "==> Signing application bundle with ad-hoc signature..."
-    codesign -s - --force --deep --options runtime build/Recall.app
-
-    echo "==> Registering updated application icon with LaunchServices..."
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R -trusted build/Recall.app || true
-    touch build/Recall.app
-else
-    echo "==> Sources unchanged, skipping compile & codesign (preserving TCC permissions)."
-fi
-
-echo "==> Writing Info.plist (v${VERSION})..."
-cat <<EOF >build/Recall.app/Contents/Info.plist
+    echo "==> Writing Info.plist (v${VERSION})..."
+    cat <<EOF >build/Recall.app/Contents/Info.plist
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -93,5 +83,21 @@ cat <<EOF >build/Recall.app/Contents/Info.plist
 </dict>
 </plist>
 EOF
+
+    echo "==> Signing application bundle with ad-hoc signature and stable designated requirement..."
+    codesign -s - --force --deep --options runtime -r='designated => identifier "com.recall.app"' build/Recall.app
+
+    echo "==> Registering updated application icon with LaunchServices..."
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R -trusted build/Recall.app || true
+
+    if [ -d "/Applications/Recall.app" ] && [ -w "/Applications/Recall.app" ]; then
+        echo "==> Syncing /Applications/Recall.app..."
+        rm -rf /Applications/Recall.app
+        cp -R build/Recall.app /Applications/Recall.app
+        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R -trusted /Applications/Recall.app || true
+    fi
+else
+    echo "==> Sources unchanged, skipping compile & codesign (preserving TCC permissions)."
+fi
 
 echo "==> Build successfully completed: build/Recall.app (v${VERSION})"

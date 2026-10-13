@@ -11,7 +11,7 @@ echo "==> Packaging ${DMG_NAME} with custom layout..."
 
 # 1. Ensure build/Recall.app exists
 if [ ! -d "build/Recall.app" ]; then
-    ./build.sh
+    ./scripts/build.sh
 fi
 
 # 2. Ensure background image exists and is compiled

@@ -118,14 +118,19 @@ struct RecorderEngineDeepCoverageTests {
 
         expectation.lock()
         engine.flushCurrentChunk {
+            expectation.lock()
             completed = true
             expectation.signal()
+            expectation.unlock()
         }
 
-        let result = expectation.wait(until: Date().addingTimeInterval(2.0))
+        let timeout = Date().addingTimeInterval(2.0)
+        while !completed && Date() < timeout {
+            expectation.wait(until: Date().addingTimeInterval(0.05))
+        }
         expectation.unlock()
 
-        if !result || !completed {
+        if !completed {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected completion block to execute for flushCurrentChunk"])
         }
     }
@@ -144,14 +149,19 @@ struct RecorderEngineDeepCoverageTests {
 
         flushExpectation.lock()
         engine.flushCurrentChunk {
+            flushExpectation.lock()
             flushDone = true
             flushExpectation.signal()
+            flushExpectation.unlock()
         }
 
-        let flushResult = flushExpectation.wait(until: Date().addingTimeInterval(3.0))
+        let flushTimeout = Date().addingTimeInterval(3.0)
+        while !flushDone && Date() < flushTimeout {
+            flushExpectation.wait(until: Date().addingTimeInterval(0.05))
+        }
         flushExpectation.unlock()
 
-        if !flushResult || !flushDone {
+        if !flushDone {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected flushCurrentChunk completion when active writer present"])
         }
 

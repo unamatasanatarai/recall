@@ -254,6 +254,7 @@ struct ChunkManagerTests {
             metadataProvider: MockVideoMetadataProvider(),
             chunksDirectory: tempDir
         )
+        manager.syncQueue()
 
         let c1 = tempDir.appendingPathComponent("c1.mp4")
         let c2 = tempDir.appendingPathComponent("c2.mp4")
