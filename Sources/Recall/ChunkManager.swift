@@ -50,11 +50,8 @@ final class ChunkManager: ChunkStore, @unchecked Sendable {
 
         if let overrideDir = chunksDirectory {
             self.chunksDirectory = overrideDir
-        } else if let xdgCache = ProcessInfo.processInfo.environment["XDG_CACHE_HOME"], !xdgCache.isEmpty {
-            self.chunksDirectory = URL(fileURLWithPath: xdgCache).appendingPathComponent("recall/chunks")
         } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            self.chunksDirectory = home.appendingPathComponent(".cache/recall/chunks")
+            self.chunksDirectory = ConfigManager.shared.defaultChunksDirectory
         }
 
         try? self.fileSystem.createDirectory(at: self.chunksDirectory, withIntermediateDirectories: true, attributes: nil)

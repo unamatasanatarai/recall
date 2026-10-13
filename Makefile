@@ -1,10 +1,14 @@
 .DEFAULT_GOAL := help
-.PHONY: help build run launch test clean reset-cache install dmg release release-dry-run kill
+.PHONY: help build run launch test clean reset-cache install dmg release release-dry-run kill revoke
 
 # Load configurations dynamically from scripts/config.sh or environment
 APP_NAME ?= $(shell bash -c 'source scripts/config.sh 2>/dev/null && echo "$$APP_NAME"' 2>/dev/null)
 ifeq ($(strip $(APP_NAME)),)
   APP_NAME := Recall
+endif
+BUNDLE_ID ?= $(shell bash -c 'source scripts/config.sh 2>/dev/null && echo "$$BUNDLE_ID"' 2>/dev/null)
+ifeq ($(strip $(BUNDLE_ID)),)
+  BUNDLE_ID := com.recall.app
 endif
 
 ## help: Display this help message
@@ -47,6 +51,10 @@ reset-cache:
 	@qlmanage -r cache 2>/dev/null || true
 	@killall Dock 2>/dev/null || true
 	@echo "✅ Cache reset complete."
+
+## revoke: Terminate running app and revoke all macOS TCC permissions for $(APP_NAME)
+revoke: kill
+	@./scripts/revoke.sh
 
 ## clean: Remove build artifacts and temporary files
 clean:

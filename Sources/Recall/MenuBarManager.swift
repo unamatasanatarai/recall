@@ -184,14 +184,15 @@ final class MenuBarManager: NSObject {
             if type == .leftMouseDragged {
                 let dy = self.dragStartLocation.y - mouseLocation.y
                 if dy > 0 {
-                    let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
-                    let maxDragDistance = max(200.0, screenHeight * 0.5)
+                    let screenHeight = NSScreen.main?.visibleFrame.height ?? ConfigManager.shared.defaultFallbackScreenHeight
+                    let maxDragDistance = max(ConfigManager.shared.minDragDistance, screenHeight * ConfigManager.shared.screenHeightDragRatio)
                     let clampedDy = min(maxDragDistance, dy)
                     let progress = min(1.0, max(0.0, clampedDy / maxDragDistance))
 
                     let maxDuration = self.chunkStore.totalRecordedDuration
                     let rawSeconds = progress * maxDuration
-                    let steppedSeconds = max(60.0, round(rawSeconds / 60.0) * 60.0)
+                    let stepSecs = ConfigManager.shared.dragTimeStepSeconds
+                    let steppedSeconds = max(stepSecs, round(rawSeconds / stepSecs) * stepSecs)
                     let finalSeconds = min(maxDuration, steppedSeconds)
                     self.selectedOffsetSeconds = finalSeconds
 
@@ -211,7 +212,7 @@ final class MenuBarManager: NSObject {
                 OverlayHUDWindow.shared.hideHUD()
 
                 let offset = self.selectedOffsetSeconds
-                if offset >= 1.0 {
+                if offset >= ConfigManager.shared.minExportOffsetSeconds {
                     print("[MenuBarManager] Mouse released! Exporting snippet for offset: \(offset)s")
                     self.triggerExport(offsetSeconds: offset)
                 }

@@ -78,4 +78,12 @@ struct RecorderEngineTests {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "showCursor must be true to record cursor"])
         }
     }
+
+    static func testChunkDurationThresholdIsTenSeconds() throws {
+        let store = MockChunkStore()
+        let engine = RecorderEngine(chunkStore: store)
+        if engine.segmentDurationThreshold != 10.0 {
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected segmentDurationThreshold to be 10.0 seconds, got \(engine.segmentDurationThreshold)"])
+        }
+    }
 }

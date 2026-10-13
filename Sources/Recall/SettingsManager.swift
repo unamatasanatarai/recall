@@ -13,12 +13,16 @@ final class SettingsManager: ObservableObject, @unchecked Sendable {
     private let defaults = UserDefaults.standard
 
     static var defaultExportsDirectory: URL {
-        let moviesDir = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first!
-        return moviesDir.appendingPathComponent("Recall-exports")
+        return ConfigManager.shared.defaultExportsDirectory
     }
 
-    static let defaultMaxStorageMB = 1000
-    static let defaultMaxStorageMinutes = 60
+    static var defaultMaxStorageMB: Int {
+        return ConfigManager.shared.defaultMaxStorageMB
+    }
+
+    static var defaultMaxStorageMinutes: Int {
+        return ConfigManager.shared.defaultMaxStorageMinutes
+    }
 
     var onSettingsChanged: (() -> Void)?
 

@@ -165,6 +165,9 @@ struct TestRunner {
         runTest("RecorderEngine.testStreamPropertiesIncludeCursor") {
             try RecorderEngineTests.testStreamPropertiesIncludeCursor()
         }
+        runTest("RecorderEngine.testChunkDurationThresholdIsTenSeconds") {
+            try RecorderEngineTests.testChunkDurationThresholdIsTenSeconds()
+        }
 
         // --- Section 8: OverlayHUDWindowTests ---
         runTest("OverlayHUDWindow.testHUDWindowProperties") {
@@ -271,6 +274,21 @@ struct TestRunner {
         }
         runTest("SettingsWindowController.testPreferencesResetButtonAction") {
             try SettingsWindowControllerTests.testPreferencesResetButtonAction()
+        }
+        runTest("SettingsWindowController.testSingleCmdQShowsNotificationPrompt") {
+            try SettingsWindowControllerTests.testSingleCmdQShowsNotificationPrompt()
+        }
+        runTest("SettingsWindowController.testDoubleCmdQQuitsApp") {
+            try SettingsWindowControllerTests.testDoubleCmdQQuitsApp()
+        }
+        runTest("SettingsWindowController.testCmdQTimeoutResetsDoublePress") {
+            try SettingsWindowControllerTests.testCmdQTimeoutResetsDoublePress()
+        }
+        runTest("SettingsWindowController.testPreferencesWindowKeyEquivalentCmdQ") {
+            try SettingsWindowControllerTests.testPreferencesWindowKeyEquivalentCmdQ()
+        }
+        runTest("SettingsWindowController.testCloseWindowCleansUpPrompt") {
+            try SettingsWindowControllerTests.testCloseWindowCleansUpPrompt()
         }
 
         // --- Section 15: BuildAutomationTests ---
@@ -399,6 +417,9 @@ struct TestRunner {
         runTest("SystemProcessAutomation.testTCCPermissionRevocationCommand") {
             try SystemProcessAutomationTests.testTCCPermissionRevocationCommand()
         }
+        runTest("SystemProcessAutomation.testRevokeScriptCoversAllPermissions") {
+            try SystemProcessAutomationTests.testRevokeScriptCoversAllPermissions()
+        }
         runTest("SystemProcessAutomation.testBuildCommandOutputBinaryCheck") {
             try SystemProcessAutomationTests.testBuildCommandOutputBinaryCheck()
         }
@@ -421,6 +442,20 @@ struct TestRunner {
         }
         runTest("DefaultProtocolsCoverage.testDefaultFFmpegRunnerConcatAndTrim") {
             try DefaultProtocolsCoverageTests.testDefaultFFmpegRunnerConcatAndTrim()
+        }
+
+        // --- Section 22: ConfigManagerTests ---
+        runTest("ConfigManager.testDefaultConfigurationValues") {
+            try ConfigManagerTests.testDefaultConfigurationValues()
+        }
+        runTest("ConfigManager.testDefaultLocationsPaths") {
+            try ConfigManagerTests.testDefaultLocationsPaths()
+        }
+        runTest("ConfigManager.testConfigResetToDefaults") {
+            try ConfigManagerTests.testConfigResetToDefaults()
+        }
+        runTest("ConfigManager.testSettingsManagerIntegrationWithConfig") {
+            try ConfigManagerTests.testSettingsManagerIntegrationWithConfig()
         }
 
         print("\nSummary: \(passedCount) passed, \(failedCount) failed.\n")

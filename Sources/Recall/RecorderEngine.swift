@@ -29,7 +29,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
     private var isWriterSessionStarted = false
     var chunkStartTimeSeconds: CFTimeInterval = 0
     private let ciContext = CIContext()
-    private let segmentDurationThreshold: TimeInterval = 60.0
+    var segmentDurationThreshold: TimeInterval = ConfigManager.shared.maxChunkDuration
 
     private let logFileURL: URL
     private let chunkStore: ChunkStore
@@ -54,22 +54,19 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
     init(
         chunkStore: ChunkStore = ChunkManager.shared,
         permissionProvider: ScreenCapturePermissionProvider = DefaultScreenCapturePermissionProvider(),
-        logFileURL: URL? = nil
+        logFileURL: URL? = nil,
+        segmentDurationThreshold: TimeInterval = ConfigManager.shared.maxChunkDuration
     ) {
         self.chunkStore = chunkStore
         self.permissionProvider = permissionProvider
+        self.segmentDurationThreshold = segmentDurationThreshold
         if let customLogURL = logFileURL {
             self.logFileURL = customLogURL
         } else {
-            let cacheDir: URL
-            if let xdgCache = ProcessInfo.processInfo.environment["XDG_CACHE_HOME"], !xdgCache.isEmpty {
-                cacheDir = URL(fileURLWithPath: xdgCache).appendingPathComponent("recall")
-            } else {
-                let home = FileManager.default.homeDirectoryForCurrentUser
-                cacheDir = home.appendingPathComponent(".cache/recall")
-            }
+            let defaultLogURL = ConfigManager.shared.defaultLogFileURL
+            let cacheDir = defaultLogURL.deletingLastPathComponent()
             try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-            self.logFileURL = cacheDir.appendingPathComponent("recall_debug.log")
+            self.logFileURL = defaultLogURL
         }
         super.init()
         log("RecorderEngine initialized.")
@@ -243,7 +240,7 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
 
         let elapsed = CACurrentMediaTime() - chunkStartTimeSeconds
 
-        // Rotate chunk if 30 seconds threshold exceeded
+        // Rotate chunk if 10 seconds threshold exceeded
         if elapsed >= segmentDurationThreshold {
             rotateChunk(width: width, height: height)
             return
@@ -371,9 +368,9 @@ final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecke
         let line = "[\(timestamp)] \(message)\n"
         print(line, terminator: "")
 
-        // Rotate log if it exceeds 10 MB
+        // Rotate log if it exceeds configured limit
         if let attrs = try? FileManager.default.attributesOfItem(atPath: logFileURL.path),
-           let size = attrs[.size] as? Int64, size > 10 * 1024 * 1024 {
+           let size = attrs[.size] as? Int64, size > ConfigManager.shared.maxLogFileSize {
             try? FileManager.default.removeItem(at: logFileURL)
         }
 

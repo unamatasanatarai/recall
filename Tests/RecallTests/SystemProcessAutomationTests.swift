@@ -9,6 +9,17 @@ struct SystemProcessAutomationTests {
         }
     }
 
+    static func testRevokeScriptCoversAllPermissions() throws {
+        let scriptPath = "scripts/revoke.sh"
+        let content = try String(contentsOfFile: scriptPath, encoding: .utf8)
+        let requiredPermissions = ["ScreenCapture", "Accessibility", "Microphone", "Camera", "SystemPolicyAllFiles", "All"]
+        for perm in requiredPermissions {
+            if !content.contains(perm) {
+                throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "scripts/revoke.sh missing revocation for \(perm)"])
+            }
+        }
+    }
+
     static func testBuildCommandOutputBinaryCheck() throws {
         let binaryPath = "build/Recall.app/Contents/MacOS/Recall"
         if binaryPath.isEmpty || !binaryPath.hasSuffix("Recall") {

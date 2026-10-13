@@ -3,6 +3,7 @@ import AppKit
 
 struct SettingsView: View {
     @ObservedObject var settings: SettingsManager = SettingsManager.shared
+    @ObservedObject var windowController: SettingsWindowController = SettingsWindowController.shared
     var chunkStore: ChunkStore = ChunkManager.shared
     var openPanelPresenter: OpenPanelPresenter = DefaultOpenPanelPresenter()
     var onPurgeRecordings: () -> Void = { MenuBarManager.shared.purgeRecordings() }
@@ -14,14 +15,23 @@ struct SettingsView: View {
 
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Invisible Escape Key Shortcut to close Preferences
-            Button("") {
-                SettingsWindowController.shared.closeWindow()
-            }
-            .keyboardShortcut(.escape, modifiers: [])
-            .hidden()
-            .frame(width: 0, height: 0)
+        ZStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 12) {
+                // Invisible Escape Key Shortcut to close Preferences
+                Button("") {
+                    SettingsWindowController.shared.closeWindow()
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+                .hidden()
+                .frame(width: 0, height: 0)
+
+                // Invisible Cmd+Q Key Shortcut for double Cmd+Q handling
+                Button("") {
+                    windowController.handleCmdQ()
+                }
+                .keyboardShortcut("q", modifiers: [.command])
+                .hidden()
+                .frame(width: 0, height: 0)
 
             // Card 1: Export Location Settings + Logo (Right)
             HStack(spacing: 8) {
@@ -88,7 +98,7 @@ struct SettingsView: View {
                             .font(.system(size: 13))
                             .frame(width: 54, alignment: .leading)
 
-                        Stepper("", value: $settings.maxStorageMB, in: 50...100000, step: 50)
+                        Stepper("", value: $settings.maxStorageMB, in: ConfigManager.shared.minStorageMB...ConfigManager.shared.maxAllowedStorageMB, step: ConfigManager.shared.stepStorageMB)
                             .labelsHidden()
 
                         // Reset size 🔄
@@ -100,7 +110,7 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary.opacity(0.8))
                         }
                         .buttonStyle(.plain)
-                        .help("Reset Max Size to default (\(SettingsManager.defaultMaxStorageMB) MB)")
+                        .help("Reset Max Size to default (\(ConfigManager.shared.defaultMaxStorageMB) MB)")
                     }
 
                     Spacer()
@@ -141,7 +151,7 @@ struct SettingsView: View {
                             .font(.system(size: 13))
                             .frame(width: 54, alignment: .leading)
 
-                        Stepper("", value: $settings.maxStorageMinutes, in: 5...10080, step: 15)
+                        Stepper("", value: $settings.maxStorageMinutes, in: ConfigManager.shared.minStorageMinutes...ConfigManager.shared.maxAllowedStorageMinutes, step: ConfigManager.shared.stepStorageMinutes)
                             .labelsHidden()
 
                         // Reset time 🔄
@@ -153,7 +163,7 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary.opacity(0.8))
                         }
                         .buttonStyle(.plain)
-                        .help("Reset Max Time to default (\(SettingsManager.defaultMaxStorageMinutes) Minutes)")
+                        .help("Reset Max Time to default (\(ConfigManager.shared.defaultMaxStorageMinutes) Minutes)")
                     }
 
                     Spacer()
@@ -172,14 +182,43 @@ struct SettingsView: View {
         .padding(.top, 12)
         .padding(.bottom, 22)
         .padding(.horizontal, 18)
-        .frame(width: 536, height: 192)
-        .onAppear {
-            updateUsageStats()
-        }
-        .onReceive(timer) { _ in
-            updateUsageStats()
+
+        if windowController.isQuitPromptVisible {
+            HStack(spacing: 7) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.yellow)
+                Text("Press again to quit")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(
+                Capsule()
+                    .fill(Color(red: 0.10, green: 0.10, blue: 0.12).opacity(0.96))
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.4), radius: 8, x: 0, y: 3)
+            )
+            .padding(.bottom, 10)
+            .transition(.asymmetric(
+                insertion: .scale(scale: 0.92).combined(with: .opacity),
+                removal: .opacity
+            ))
         }
     }
+    .frame(width: ConfigManager.shared.preferencesWindowWidth, height: ConfigManager.shared.preferencesWindowHeight)
+    .animation(.spring(response: 0.28, dampingFraction: 0.72), value: windowController.isQuitPromptVisible)
+    .onAppear {
+        updateUsageStats()
+    }
+    .onReceive(timer) { _ in
+        updateUsageStats()
+    }
+}
 
     func chooseDirectory() {
         openPanelPresenter.chooseDirectory { path in
@@ -190,11 +229,11 @@ struct SettingsView: View {
     }
 
     func resetStorageMB() {
-        settings.maxStorageMB = SettingsManager.defaultMaxStorageMB
+        settings.maxStorageMB = ConfigManager.shared.defaultMaxStorageMB
     }
 
     func resetStorageMinutes() {
-        settings.maxStorageMinutes = SettingsManager.defaultMaxStorageMinutes
+        settings.maxStorageMinutes = ConfigManager.shared.defaultMaxStorageMinutes
     }
 
     private func updateUsageStats() {

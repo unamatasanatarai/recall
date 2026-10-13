@@ -34,7 +34,7 @@ Traditional screen recording forces you to predict when something important is g
 ## Key Capabilities
 
 ### Continuous Background Buffer
-Captures the main display continuously at 30 FPS using `CGDisplayStream` and hardware-accelerated H.264 encoding (`AVAssetWriter`) into rolling 30-second video chunks.
+Captures the main display continuously at 30 FPS using `CGDisplayStream` and hardware-accelerated H.264 encoding (`AVAssetWriter`) into rolling 10-second video chunks.
 
 ### Drag-to-Export Glassmorphism HUD
 An interactive translucent beam (`OverlayHUDWindow`) appears when dragging down from the menu bar icon, calculating retroactive time offsets in real time with dynamic visual feedback.
@@ -152,7 +152,7 @@ make release VERSION=1.1.0
 
 ### Resetting TCC Permissions
 
-Reset macOS Screen Capture privacy settings during testing:
+Reset all macOS privacy permissions (Screen Capture, Accessibility, Microphone, Camera, and full system permissions) during testing:
 
 ```bash
 make revoke
@@ -164,6 +164,7 @@ make revoke
 
 Settings can be customized via the Preferences window (`Cmd + ,` or right-click menu bar icon):
 
+* **Closing / Quitting from Preferences:** Double `Cmd + Q` (`⌘Q`) allows closing and quitting the application with an in-window prompt notification to confirm before exit. Single `Esc` or `Cmd + W` closes the Preferences window.
 * **Export Location:** Output directory for exported clips. *(Default: `~/Movies/Recall-exports`)*
 * **Max Size (MB):** Maximum disk buffer capacity for stored video chunks. *(Default: `1000 MB`)*
 * **Max Time (Minutes):** Maximum historical time window retained. *(Default: `60 Minutes`)*
