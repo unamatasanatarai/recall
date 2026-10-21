@@ -1,390 +1,638 @@
 import Foundation
-import CoreGraphics
 import AVFoundation
+import Combine
+import CoreGraphics
 import CoreMedia
 import CoreVideo
-import CoreImage
 
-
-enum RecordingState: Equatable {
-    case idle
-    case recording
-    case error(String)
+extension RunLoop {
+    /// Runs `block` on the main thread in any common run loop mode, including the modal loop
+    /// `terminate:` spins while waiting for a reply, even when that loop runs inside a main-queue block.
+    static func performOnMainInCommonModes(_ block: @escaping () -> Void) {
+        let mainLoop = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(mainLoop, CFRunLoopMode.commonModes.rawValue, block)
+        CFRunLoopWakeUp(mainLoop)
+    }
 }
+
+/// Host-clock helpers. Capture timestamps are host time, so all chunk timing uses this clock.
+enum HostClock {
+    static func now() -> CMTime {
+        return CMClockGetTime(CMClockGetHostTimeClock())
+    }
+
+    /// Wall-clock date of a host-clock timestamp.
+    static func date(for time: CMTime, now: CMTime = HostClock.now()) -> Date {
+        return Date(timeIntervalSinceNow: CMTimeGetSeconds(CMTimeSubtract(time, now)))
+    }
+}
+
+// MARK: - Display Info
+
+protocol DisplayInfoProvider {
+    /// The display to record and the output size in pixels.
+    func mainDisplay(nativeResolution: Bool) -> (id: CGDirectDisplayID, width: Int, height: Int)
+}
+
+struct DefaultDisplayInfoProvider: DisplayInfoProvider {
+    func mainDisplay(nativeResolution: Bool) -> (id: CGDirectDisplayID, width: Int, height: Int) {
+        let mainID = CGMainDisplayID()
+        // Point size by default; on Retina displays the native pixel size is twice as large.
+        var width = CGDisplayPixelsWide(mainID)
+        var height = CGDisplayPixelsHigh(mainID)
+        if nativeResolution, let mode = CGDisplayCopyDisplayMode(mainID) {
+            width = mode.pixelWidth
+            height = mode.pixelHeight
+        }
+        // Video encoders need even dimensions.
+        return (mainID, width & ~1, height & ~1)
+    }
+}
+
+// MARK: - Recorder Engine
 
 final class RecorderEngine: NSObject, ScreenCapture, ObservableObject, @unchecked Sendable {
     static let shared = RecorderEngine()
+    static let permissionMessage = "Grant screen recording permission in System Settings."
 
     @Published private(set) var state: RecordingState = .idle
+    @Published private(set) var isPausedByUser = false
 
-    private var displayStream: CGDisplayStream?
-    private var currentWriter: AVAssetWriter?
-    private var currentVideoInput: AVAssetWriterInput?
-    private var currentAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    var statePublisher: AnyPublisher<RecordingState, Never> {
+        return $state.eraseToAnyPublisher()
+    }
 
-    private var currentChunkURL: URL?
-    private var currentChunkStartTime: Date = Date()
+    let segmentDurationThreshold: TimeInterval
+    private let captureStartTimeout: TimeInterval
+    private let captureRestartDelay: TimeInterval
 
-    var framesWrittenInChunk: Int64 = 0
-    private var isWriterSessionStarted = false
-    var chunkStartTimeSeconds: CFTimeInterval = 0
-    private let ciContext = CIContext()
-    var segmentDurationThreshold: TimeInterval = ConfigManager.shared.maxChunkDuration
-
-    private let logFileURL: URL
     private let chunkStore: ChunkStore
+    private let permissionProvider: ScreenCapturePermissionProvider
+    private let displayInfo: DisplayInfoProvider
+    private let fileSystem: FileSystemProvider
+    private let sourceFactory: (CaptureBackend) -> CaptureSource
+    private let preferences: UserDefaults
+    private let config = ConfigManager.shared
 
-    // Dedicated high-priority queue for frame encoding to keep the main thread 100% free
+    // Every capture callback and every writer operation runs on this queue.
     private let recordingQueue = DispatchQueue(label: "com.recall.recorder.encoding", qos: .userInteractive)
 
-    private static let logDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        return formatter
-    }()
+    // MARK: Confined to recordingQueue
+    private var options = RecordingOptions()
+    private var wantsRecording = false
+    private var pauseReasons: Set<PauseReason> = []
+    private var preferredBackend: CaptureBackend
+    private var source: CaptureSource?
+    private var sourceGeneration = 0
+    private var captureConfiguration: CaptureConfiguration?
+    private var writer: ChunkWriter?
+    private var lastFrame: (buffer: CVPixelBuffer, time: CMTime)?
+    private var hasReceivedEvent = false
+    private var consecutiveFailures = 0
+    private var lastError: String?
+    private var lastWriterAttempt: TimeInterval = -.infinity
+    private var hasLoggedClockMismatch = false
+    private var rotationTimer: DispatchSourceTimer?
+    private var watchdog: DispatchWorkItem?
+    private var restartWork: DispatchWorkItem?
+    private var displayChangeWork: DispatchWorkItem?
+    private let pendingFinishes = DispatchGroup()
 
-    private static let chunkDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
-        return formatter
-    }()
+    // Read from any thread.
+    private let unsavedLock = NSLock()
+    private var unsavedChunkStart: CMTime?
 
-    private let permissionProvider: ScreenCapturePermissionProvider
+    // A purge bumps the generation. A chunk finalized afterwards under an older generation is
+    // deleted instead of registered, so footage being finalized during a purge cannot survive it.
+    private let purgeLock = NSLock()
+    private var purgeGeneration = 0   // guarded by purgeLock
+
+    // MARK: Main thread
+    private var permissionTimer: Timer?
 
     init(
         chunkStore: ChunkStore = ChunkManager.shared,
         permissionProvider: ScreenCapturePermissionProvider = DefaultScreenCapturePermissionProvider(),
-        logFileURL: URL? = nil,
-        segmentDurationThreshold: TimeInterval = ConfigManager.shared.maxChunkDuration
+        displayInfo: DisplayInfoProvider = DefaultDisplayInfoProvider(),
+        fileSystem: FileSystemProvider = FileManager.default,
+        segmentDurationThreshold: TimeInterval = ConfigManager.shared.maxChunkDuration,
+        captureStartTimeout: TimeInterval = ConfigManager.shared.captureStartTimeout,
+        captureRestartDelay: TimeInterval = ConfigManager.shared.captureRestartDelay,
+        preferredBackend: CaptureBackend? = nil,
+        preferences: UserDefaults = .standard,
+        sourceFactory: @escaping (CaptureBackend) -> CaptureSource = RecorderEngine.makeSource
     ) {
         self.chunkStore = chunkStore
         self.permissionProvider = permissionProvider
+        self.displayInfo = displayInfo
+        self.fileSystem = fileSystem
         self.segmentDurationThreshold = segmentDurationThreshold
-        if let customLogURL = logFileURL {
-            self.logFileURL = customLogURL
-        } else {
-            let defaultLogURL = ConfigManager.shared.defaultLogFileURL
-            let cacheDir = defaultLogURL.deletingLastPathComponent()
-            try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-            self.logFileURL = defaultLogURL
-        }
+        self.captureStartTimeout = captureStartTimeout
+        self.captureRestartDelay = captureRestartDelay
+        self.preferences = preferences
+        self.preferredBackend = preferredBackend ?? RecorderEngine.defaultBackend(preferences: preferences)
+        self.sourceFactory = sourceFactory
         super.init()
-        log("RecorderEngine initialized.")
     }
 
-    private var permissionTimer: Timer?
+    /// The macOS version on which ScreenCaptureKit last failed, and when. It is skipped on that
+    /// version for a week, so every launch does not lose the watchdog's wait; a system update or
+    /// the week passing tries it again.
+    static let screenCaptureKitFailureKey = "screenCaptureKitFailedOnSystemVersion"
+    static let screenCaptureKitFailureDateKey = "screenCaptureKitFailureDate"
+    static let screenCaptureKitRetryInterval: TimeInterval = 7 * 24 * 3600
+
+    /// ScreenCaptureKit had capture bugs before macOS 12.5.
+    static func defaultBackend(preferences: UserDefaults = .standard, now: Date = Date()) -> CaptureBackend {
+        guard #available(macOS 12.5, *) else { return .displayStream }
+        if preferences.string(forKey: screenCaptureKitFailureKey) == ProcessInfo.processInfo.operatingSystemVersionString,
+           let failedAt = preferences.object(forKey: screenCaptureKitFailureDateKey) as? Date,
+           now.timeIntervalSince(failedAt) < screenCaptureKitRetryInterval {
+            return .displayStream
+        }
+        return .screenCaptureKit
+    }
+
+    static func makeSource(_ backend: CaptureBackend) -> CaptureSource {
+        switch backend {
+        case .screenCaptureKit:
+            return ScreenCaptureKitSource()
+        case .displayStream:
+            return DisplayStreamSource()
+        }
+    }
+
+    var unsavedDuration: TimeInterval {
+        guard let start = unsavedLock.withCriticalSection({ unsavedChunkStart }) else { return 0 }
+        return max(0, CMTimeGetSeconds(CMTimeSubtract(HostClock.now(), start)))
+    }
+
+    // MARK: - Lifecycle
 
     func startContinuousRecording() {
-        log("startContinuousRecording requested.")
-        guard state != .recording else {
-            log("Already recording.")
-            return
-        }
+        Log.recorder.notice("startContinuousRecording requested")
 
-        let preflightGranted = permissionProvider.preflightAccess()
-        log("ScreenCapturePermission preflightGranted: \(preflightGranted)")
-
-        if preflightGranted {
-            permissionTimer?.invalidate()
-            permissionTimer = nil
-            beginStreamCapture()
-        } else {
-            log("Screen capture permission missing. Requesting access...")
+        guard permissionProvider.preflightAccess() else {
+            Log.recorder.notice("Screen capture permission missing; requesting access")
             _ = permissionProvider.requestAccess()
-            self.state = .error("Grant screen recording permission in System Settings.")
+            recordingQueue.async {
+                self.lastError = RecorderEngine.permissionMessage
+                self.publishState()
+            }
 
             permissionTimer?.invalidate()
             permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
                 self?.handlePermissionTimerCheck()
             }
+            return
+        }
+
+        permissionTimer?.invalidate()
+        permissionTimer = nil
+        recordingQueue.async {
+            self.lastError = nil
+            self.wantsRecording = true
+            self.updateCapture()
         }
     }
 
     func handlePermissionTimerCheck() {
-        if permissionProvider.preflightAccess() {
-            log("Screen capture permission granted!")
-            permissionTimer?.invalidate()
-            permissionTimer = nil
-            beginStreamCapture()
-        }
+        guard permissionProvider.preflightAccess() else { return }
+        Log.recorder.notice("Screen capture permission granted")
+        startContinuousRecording()
     }
 
-    static func createStreamProperties() -> [CFString: Any] {
-        return [
-            CGDisplayStream.minimumFrameTime: (1.0 / 30.0) as CFNumber,
-            CGDisplayStream.showCursor: true as CFBoolean,
-            CGDisplayStream.queueDepth: 5 as CFNumber
-        ]
-    }
-
-    @discardableResult
-    func beginStreamCapture() -> Bool {
-        if displayStream != nil {
-            displayStream?.stop()
-            displayStream = nil
+    func stopStream(completion: (() -> Void)? = nil) {
+        DispatchQueue.main.async {
+            self.permissionTimer?.invalidate()
+            self.permissionTimer = nil
         }
-
-        let mainID = CGMainDisplayID()
-        let width = CGDisplayPixelsWide(mainID)
-        let height = CGDisplayPixelsHigh(mainID)
-        log("beginStreamCapture for display: \(mainID), size: \(width)x\(height)")
-
-        do {
-            try startNewChunk(width: width, height: height)
-
-            let properties = RecorderEngine.createStreamProperties()
-            let stream = CGDisplayStream(
-                display: mainID,
-                outputWidth: width,
-                outputHeight: height,
-                pixelFormat: Int32(kCVPixelFormatType_32BGRA),
-                properties: properties as CFDictionary
-            ) { [weak self] status, displayTime, frameSurface, updateRef in
-                guard let self = self else { return }
-                // Hand frame processing off to the dedicated high-priority queue immediately
-                self.recordingQueue.async {
-                    self.handleFrame(status: status, displayTime: displayTime, surface: frameSurface, width: width, height: height)
+        recordingQueue.async {
+            self.wantsRecording = false
+            self.lastError = nil
+            self.restartWork?.cancel()
+            self.restartWork = nil
+            self.stopCapture()
+            self.publishState()
+            // Also waits for rotations still being finalized, so quitting never cuts a chunk short.
+            // Delivered through the run loop, not the main queue: termination waits for this inside a
+            // nested run loop that may itself be running in a main-queue block (a SIGTERM handler, an
+            // alert), where nothing else queued on main can run.
+            self.pendingFinishes.notify(queue: .global(qos: .userInitiated)) {
+                RunLoop.performOnMainInCommonModes {
+                    completion?()
                 }
             }
-
-            guard let stream = stream else {
-                log("Failed to create CGDisplayStream")
-                self.state = .error("Failed to create display stream.")
-                return false
-            }
-
-            let runLoopSource = stream.runLoopSource!
-            CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-
-            let err = stream.start()
-            if err != .success {
-                log("CGDisplayStream start error: \(err.rawValue)")
-                self.state = .error("Display stream start failed: \(err.rawValue)")
-                return false
-            }
-
-            self.displayStream = stream
-            self.state = .recording
-            log("Always-On CGDisplayStream recording active!")
-            return true
-
-        } catch {
-            log("beginStreamCapture error: \(error)")
-            self.state = .error("Setup error: \(error.localizedDescription)")
-            return false
         }
     }
 
-    func startNewChunk(width: Int, height: Int) throws {
-        let chunksDir = chunkStore.chunksDirectory
-        let timestamp = RecorderEngine.chunkDateFormatter.string(from: Date())
-        let chunkURL = chunksDir.appendingPathComponent("chunk_\(timestamp).mp4")
-        log("startNewChunk target: \(chunkURL.path)")
+    func setPaused(_ paused: Bool, reason: PauseReason) {
+        if reason == .user {
+            DispatchQueue.main.async { self.isPausedByUser = paused }
+        }
+        recordingQueue.async {
+            let changed = paused ? self.pauseReasons.insert(reason).inserted : self.pauseReasons.remove(reason) != nil
+            guard changed else { return }
+            Log.recorder.notice("\(paused ? "Paused" : "Resumed", privacy: .public) recording (\(reason.rawValue, privacy: .public))")
+            self.updateCapture()
+        }
+    }
 
-        try? FileManager.default.removeItem(at: chunkURL)
+    func applyRecordingOptions(_ options: RecordingOptions) {
+        recordingQueue.async {
+            guard options != self.options else { return }
+            self.options = options
+            if self.source != nil {
+                Log.recorder.notice("Recording options changed; restarting capture")
+                self.restartCapture()
+            }
+        }
+    }
 
-        let writer = try AVAssetWriter(outputURL: chunkURL, fileType: .mp4)
+    func handleDisplayConfigurationChange() {
+        recordingQueue.async {
+            // Reconfiguration arrives as a burst of notifications; act once it settles.
+            self.displayChangeWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self, self.source != nil, let current = self.captureConfiguration else { return }
+                let display = self.displayInfo.mainDisplay(nativeResolution: self.options.recordAtNativeResolution)
+                guard display.id != current.displayID || display.width != current.width || display.height != current.height else { return }
+                Log.recorder.notice("Main display changed to \(display.width)x\(display.height); restarting capture")
+                self.restartCapture()
+            }
+            self.displayChangeWork = work
+            self.recordingQueue.asyncAfter(deadline: .now() + 1.0, execute: work)
+        }
+    }
 
-        // Hardware H.264 Encoder settings optimized for low CPU/memory footprint
-        let compressionProperties: [String: Any] = [
-            AVVideoAverageBitRateKey: 4_000_000, // 4 Mbps
-            AVVideoMaxKeyFrameIntervalKey: 60,   // Keyframe every 2 seconds at 30fps
-            AVVideoProfileLevelKey: AVVideoProfileLevelH264MainAutoLevel,
-            AVVideoAllowFrameReorderingKey: false
-        ]
+    // MARK: - Chunks
 
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: width,
-            AVVideoHeightKey: height,
-            AVVideoCompressionPropertiesKey: compressionProperties
-        ]
+    /// Finalizes the chunk in progress (registering it with the chunk store) and continues
+    /// recording into a new one without a gap.
+    func flushCurrentChunk(completion: (() -> Void)? = nil) {
+        let completeOnMain = {
+            DispatchQueue.main.async { completion?() }
+        }
+        recordingQueue.async {
+            guard let current = self.writer else {
+                completeOnMain()
+                return
+            }
+            let now = HostClock.now()
+            Log.recorder.info("Flushing \(current.finalURL.lastPathComponent, privacy: .public) (\(current.framesWritten) frames)")
+            self.writer = nil
+            if let seed = self.lastFrame?.buffer {
+                self.openWriter(at: now, seed: seed)
+            }
+            self.finish(current, at: now, completion: completeOnMain)
+        }
+    }
 
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        input.expectsMediaDataInRealTime = true
+    /// Deletes every recording: stored chunks, the chunk being written, and chunks still being
+    /// finalized. Recording continues into a fresh chunk.
+    func purgeRecordings() {
+        recordingQueue.async {
+            self.purgeLock.withCriticalSection {
+                self.purgeGeneration += 1
+                // Queued while holding the lock, so it lands after any registration that passed
+                // the generation check and before any that did not.
+                self.chunkStore.purgeAllChunks()
+            }
+            if let current = self.writer {
+                self.writer = nil
+                current.cancel()
+                self.setUnsavedChunkStart(nil)
+            }
+            if self.source != nil, let seed = self.lastFrame?.buffer {
+                self.openWriter(at: HostClock.now(), seed: seed)
+            }
+        }
+    }
 
-        let pixelAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
+    // MARK: - Capture Control (recordingQueue)
 
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: pixelAttributes
+    private func updateCapture() {
+        let shouldCapture = wantsRecording && pauseReasons.isEmpty
+        if shouldCapture && source == nil {
+            startCapture()
+        } else if !shouldCapture && source != nil {
+            stopCapture()
+        }
+        publishState()
+    }
+
+    private func startCapture() {
+        let display = displayInfo.mainDisplay(nativeResolution: options.recordAtNativeResolution)
+        let configuration = CaptureConfiguration(displayID: display.id, width: display.width, height: display.height, frameRate: config.targetFrameRate)
+        let backend = preferredBackend
+        let source = sourceFactory(backend)
+
+        sourceGeneration += 1
+        let generation = sourceGeneration
+        self.source = source
+        captureConfiguration = configuration
+        hasReceivedEvent = false
+        startRotationTimer()
+
+        Log.recorder.notice("Starting \(backend.rawValue, privacy: .public) capture of display \(display.id) at \(display.width)x\(display.height)")
+        source.start(
+            configuration: configuration,
+            queue: recordingQueue,
+            eventHandler: { [weak self] event in
+                self?.handle(event, generation: generation)
+            },
+            stopHandler: { [weak self] error in
+                self?.recordingQueue.async {
+                    self?.handleSourceStopped(error, generation: generation)
+                }
+            },
+            completion: { [weak self] error in
+                self?.handleSourceStarted(error: error, backend: backend, generation: generation)
+            }
         )
-
-        guard writer.canAdd(input) else {
-            log("Cannot add input to writer for chunk")
-            throw NSError(domain: "RecorderEngine", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot add input"])
-        }
-
-        writer.add(input)
-        writer.startWriting()
-        log("Started chunk writer: status=\(writer.status.rawValue)")
-
-        self.currentWriter = writer
-        self.currentVideoInput = input
-        self.currentAdaptor = adaptor
-        self.currentChunkURL = chunkURL
-        self.currentChunkStartTime = Date()
-        self.framesWrittenInChunk = 0
-        self.isWriterSessionStarted = false
-        self.chunkStartTimeSeconds = CACurrentMediaTime()
     }
 
-    func handleFrame(status: CGDisplayStreamFrameStatus, displayTime: UInt64, surface: IOSurface?, width: Int, height: Int) {
-        guard status == .frameComplete || status == .frameIdle else { return }
-        guard let surface = surface else { return }
+    private func stopCapture() {
+        sourceGeneration += 1
+        rotationTimer?.cancel()
+        rotationTimer = nil
+        watchdog?.cancel()
+        watchdog = nil
+        displayChangeWork?.cancel()
+        displayChangeWork = nil
 
-        let elapsed = CACurrentMediaTime() - chunkStartTimeSeconds
+        if let source = source {
+            source.stop {}
+            self.source = nil
+        }
+        captureConfiguration = nil
 
-        // Rotate chunk if 10 seconds threshold exceeded
-        if elapsed >= segmentDurationThreshold {
-            rotateChunk(width: width, height: height)
+        if let current = writer {
+            writer = nil
+            finish(current, at: HostClock.now(), completion: nil)
+        }
+        lastFrame = nil
+    }
+
+    private func restartCapture() {
+        stopCapture()
+        updateCapture()
+    }
+
+    private func handleSourceStarted(error: Error?, backend: CaptureBackend, generation: Int) {
+        guard generation == sourceGeneration else { return }
+
+        if let error = error {
+            Log.recorder.error("\(backend.rawValue, privacy: .public) capture failed to start: \(error.localizedDescription, privacy: .public)")
+            stopCapture()
+            // A display that just went away or content that is not ready yet says nothing about
+            // whether ScreenCaptureKit works; retry those instead of falling back.
+            let isTransient = (error as? CaptureError)?.isTransient == true
+            if backend == .screenCaptureKit && !isTransient {
+                fallBackToDisplayStream()
+                return
+            }
+            lastError = "Screen capture could not start: \(error.localizedDescription)"
+            publishState()
+            scheduleRestart()
             return
         }
 
-        let pts = CMTime(seconds: elapsed, preferredTimescale: 600)
+        Log.recorder.notice("\(backend.rawValue, privacy: .public) capture active")
+        lastError = nil
+        publishState()
 
-        guard let writer = currentWriter, let input = currentVideoInput, let adaptor = currentAdaptor else { return }
+        guard backend == .screenCaptureKit else { return }
+        // ScreenCaptureKit can start "successfully" and still deliver nothing (seen on macOS 12
+        // when the system denies capture silently). Fall back if it stays silent.
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, generation == self.sourceGeneration, !self.hasReceivedEvent else { return }
+            Log.recorder.error("ScreenCaptureKit delivered no frames")
+            self.stopCapture()
+            self.fallBackToDisplayStream()
+        }
+        watchdog = work
+        recordingQueue.asyncAfter(deadline: .now() + captureStartTimeout, execute: work)
+    }
 
-        var unmanagedPixelBuffer: Unmanaged<CVPixelBuffer>?
+    private func handleSourceStopped(_ error: Error, generation: Int) {
+        guard generation == sourceGeneration else { return }
+        Log.recorder.error("Capture stopped unexpectedly: \(error.localizedDescription, privacy: .public)")
+        stopCapture()
 
-        // Zero-copy IOSurface wrapping (O(1) GPU-to-buffer binding with zero CPU/GPU copy overhead)
-        let cvErr = CVPixelBufferCreateWithIOSurface(
-            kCFAllocatorDefault,
-            surface,
-            [kCVPixelBufferMetalCompatibilityKey: true] as CFDictionary,
-            &unmanagedPixelBuffer
-        )
+        consecutiveFailures += 1
+        if preferredBackend == .screenCaptureKit && consecutiveFailures >= 3 {
+            fallBackToDisplayStream()
+            return
+        }
+        lastError = "Screen capture stopped: \(error.localizedDescription)"
+        publishState()
+        scheduleRestart()
+    }
 
-        let pbToAppend: CVPixelBuffer
-        if cvErr == kCVReturnSuccess, let unmanaged = unmanagedPixelBuffer {
-            pbToAppend = unmanaged.takeRetainedValue()
+    private func fallBackToDisplayStream() {
+        Log.recorder.notice("Falling back to CGDisplayStream capture")
+        preferences.set(ProcessInfo.processInfo.operatingSystemVersionString, forKey: RecorderEngine.screenCaptureKitFailureKey)
+        preferences.set(Date(), forKey: RecorderEngine.screenCaptureKitFailureDateKey)
+        preferredBackend = .displayStream
+        consecutiveFailures = 0
+        updateCapture()
+    }
+
+    private func scheduleRestart() {
+        restartWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.restartWork = nil
+            self.updateCapture()
+        }
+        restartWork = work
+        recordingQueue.asyncAfter(deadline: .now() + captureRestartDelay, execute: work)
+    }
+
+    private func startRotationTimer() {
+        rotationTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: recordingQueue)
+        // Idle chunks end at most one interval late.
+        let interval = min(config.rotationCheckInterval, segmentDurationThreshold / 10)
+        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(Int(interval * 200)))
+        timer.setEventHandler { [weak self] in
+            self?.rotationTick()
+        }
+        timer.resume()
+        rotationTimer = timer
+    }
+
+    // MARK: - Frames (recordingQueue)
+
+    private func handle(_ event: CaptureEvent, generation: Int) {
+        guard generation == sourceGeneration else { return }
+        hasReceivedEvent = true
+
+        guard case let .frame(buffer, rawTime) = event else { return }
+        consecutiveFailures = 0
+        let time = hostTime(for: rawTime)
+        lastFrame = (buffer, time)
+
+        guard let current = writer else {
+            openWriter(at: time, seed: buffer)
+            return
+        }
+        if current.elapsed(at: time) >= segmentDurationThreshold || !current.accepts(buffer) {
+            rotate(at: time, seed: buffer)
+            return
+        }
+        current.append(buffer, at: time)
+        if current.hasFailed {
+            handleWriterFailure(current)
+        }
+    }
+
+    /// Rotates on schedule even while the screen is idle and no frames arrive, and retries
+    /// opening a writer after a failure.
+    private func rotationTick() {
+        guard source != nil, let seed = lastFrame?.buffer else { return }
+        let now = HostClock.now()
+        if let current = writer {
+            if current.elapsed(at: now) >= segmentDurationThreshold {
+                rotate(at: now, seed: seed)
+            }
         } else {
-            // Fallback if zero-copy creation is unsupported
-            guard let pool = adaptor.pixelBufferPool else { return }
-            var poolBuffer: CVPixelBuffer?
-            guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &poolBuffer) == kCVReturnSuccess, let pb = poolBuffer else { return }
-            let ciImage = CIImage(ioSurface: surface)
-            ciContext.render(ciImage, to: pb)
-            pbToAppend = pb
-        }
-
-        if !isWriterSessionStarted {
-            writer.startSession(atSourceTime: pts)
-            isWriterSessionStarted = true
-        }
-
-        if input.isReadyForMoreMediaData {
-            if adaptor.append(pbToAppend, withPresentationTime: pts) {
-                framesWrittenInChunk += 1
-            }
+            openWriter(at: now, seed: seed)
         }
     }
 
-    func rotateChunk(width: Int, height: Int) {
-        guard let oldWriter = currentWriter, let oldInput = currentVideoInput, let oldURL = currentChunkURL else { return }
-        let startTime = currentChunkStartTime
-        let duration = CACurrentMediaTime() - chunkStartTimeSeconds
-        let frameCount = framesWrittenInChunk
-
-        oldInput.markAsFinished()
-        oldWriter.finishWriting {
-            if (oldWriter.status == .completed || oldWriter.status == .unknown) && frameCount > 0 {
-                self.chunkStore.registerChunk(url: oldURL, startTime: startTime, duration: duration)
-            } else {
-                try? FileManager.default.removeItem(at: oldURL)
-            }
+    /// Starts the next chunk before finishing the current one, so no frame falls between them.
+    private func rotate(at time: CMTime, seed: CVPixelBuffer) {
+        let previous = writer
+        writer = nil
+        openWriter(at: time, seed: seed)
+        if let previous = previous {
+            finish(previous, at: time, completion: nil)
         }
-
-        // Start new chunk immediately
-        try? startNewChunk(width: width, height: height)
     }
 
-    /// Flush the current in-progress chunk asynchronously without blocking caller thread.
-    func flushCurrentChunk(completion: (() -> Void)? = nil) {
-        recordingQueue.async {
-            guard let writer = self.currentWriter, let input = self.currentVideoInput, let url = self.currentChunkURL else {
-                completion?()
-                return
+    private func openWriter(at time: CMTime, seed: CVPixelBuffer) {
+        guard captureConfiguration != nil else { return }
+        let attemptTime = CMTimeGetSeconds(time)
+        if lastError != nil && attemptTime - lastWriterAttempt < config.writerRetryInterval {
+            return
+        }
+        lastWriterAttempt = attemptTime
+
+        let directory = chunkStore.chunksDirectory
+        if !fileSystem.fileExists(atPath: directory.path) {
+            // Recreate the directory if something (a cache cleaner, the user) removed it.
+            StorageDirectory.prepare(directory, fileSystem: fileSystem)
+        }
+
+        let settings = EncoderSettings.make(
+            width: CVPixelBufferGetWidth(seed),
+            height: CVPixelBufferGetHeight(seed),
+            preferHEVC: options.preferHEVC
+        )
+        do {
+            let newWriter = try ChunkWriter(directory: directory, startTime: time, startDate: HostClock.date(for: time), settings: settings, fileSystem: fileSystem)
+            newWriter.append(seed, at: time)
+            writer = newWriter
+            setUnsavedChunkStart(time)
+            if lastError != nil {
+                lastError = nil
+                publishState()
             }
+        } catch {
+            Log.recorder.error("Could not start a chunk: \(error.localizedDescription, privacy: .public)")
+            setUnsavedChunkStart(nil)
+            lastError = "Recording failed: \(error.localizedDescription)"
+            publishState()
+        }
+    }
 
-            let startTime = self.currentChunkStartTime
-            let duration = CACurrentMediaTime() - self.chunkStartTimeSeconds
-            let frameCount = self.framesWrittenInChunk
-
-            self.log("flushCurrentChunk: finalizing \(url.lastPathComponent) (\(frameCount) frames, \(String(format: "%.1f", duration))s)")
-
-            input.markAsFinished()
-
-            writer.finishWriting {
-                if (writer.status == .completed || writer.status == .unknown) && frameCount > 0 {
-                    self.chunkStore.registerChunk(url: url, startTime: startTime, duration: duration)
-                } else {
-                    try? FileManager.default.removeItem(at: url)
+    private func finish(_ chunkWriter: ChunkWriter, at time: CMTime, completion: (() -> Void)?) {
+        if writer == nil {
+            setUnsavedChunkStart(nil)
+        }
+        pendingFinishes.enter()
+        let chunkStore = self.chunkStore
+        let pendingFinishes = self.pendingFinishes
+        let fileSystem = self.fileSystem
+        let generation = purgeLock.withCriticalSection { purgeGeneration }
+        chunkWriter.finish(at: time) { [self] result in
+            switch result {
+            case .success(let chunk?):
+                // Checked and registered under the purge lock, so a purge cannot slip in between.
+                let isCurrent = self.purgeLock.withCriticalSection { () -> Bool in
+                    guard generation == self.purgeGeneration else { return false }
+                    chunkStore.registerChunk(url: chunk.url, startTime: chunk.startDate, duration: chunk.duration)
+                    return true
                 }
-                
-                let mainID = CGMainDisplayID()
-                let width = CGDisplayPixelsWide(mainID)
-                let height = CGDisplayPixelsHigh(mainID)
-                try? self.startNewChunk(width: width, height: height)
-                
-                completion?()
+                if !isCurrent {
+                    try? fileSystem.removeItem(at: chunk.url)
+                }
+            case .success(nil):
+                break
+            case .failure(let error):
+                Log.recorder.error("Could not finish \(chunkWriter.finalURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+            completion?()
+            pendingFinishes.leave()
+        }
+    }
+
+    private func handleWriterFailure(_ failed: ChunkWriter) {
+        Log.recorder.error("Chunk writer failed: \(failed.failureDescription, privacy: .public)")
+        failed.cancel()
+        writer = nil
+        setUnsavedChunkStart(nil)
+        lastError = "Recording failed: \(failed.failureDescription)"
+        publishState()
+        // rotationTick retries after writerRetryInterval.
+    }
+
+    /// ScreenCaptureKit and CGDisplayStream both stamp frames in host time; guard against a
+    /// source that does not, since chunk timing assumes it.
+    private func hostTime(for time: CMTime) -> CMTime {
+        let now = HostClock.now()
+        guard time.isValid, abs(CMTimeGetSeconds(CMTimeSubtract(now, time))) < 1.0 else {
+            if !hasLoggedClockMismatch {
+                hasLoggedClockMismatch = true
+                Log.recorder.notice("Frame timestamps are not in host time; using arrival time")
+            }
+            return now
+        }
+        return time
+    }
+
+    private func setUnsavedChunkStart(_ time: CMTime?) {
+        unsavedLock.withCriticalSection { unsavedChunkStart = time }
+    }
+
+    private func publishState() {
+        let newState: RecordingState
+        if wantsRecording && !pauseReasons.isEmpty {
+            newState = .paused
+        } else if let error = lastError {
+            newState = .error(error)
+        } else if !wantsRecording {
+            newState = .idle
+        } else {
+            newState = .recording
+        }
+        DispatchQueue.main.async {
+            if self.state != newState {
+                self.state = newState
             }
         }
     }
 
-    func stopStream() {
-        recordingQueue.async {
-            if let stream = self.displayStream {
-                stream.stop()
-                self.displayStream = nil
-            }
-            if let writer = self.currentWriter, let input = self.currentVideoInput, let url = self.currentChunkURL {
-                let startTime = self.currentChunkStartTime
-                let duration = CACurrentMediaTime() - self.chunkStartTimeSeconds
-                let count = self.framesWrittenInChunk
-                input.markAsFinished()
-                writer.finishWriting {
-                    if (writer.status == .completed || writer.status == .unknown) && count > 0 {
-                        self.chunkStore.registerChunk(url: url, startTime: startTime, duration: duration)
-                    }
-                }
-            }
-            self.currentWriter = nil
-            self.currentVideoInput = nil
-            self.currentAdaptor = nil
-            DispatchQueue.main.async {
-                self.state = .idle
-            }
-        }
+    // MARK: - Testing Support
+
+    var activeBackend: CaptureBackend {
+        return recordingQueue.sync { preferredBackend }
     }
 
-    func log(_ message: String) {
-        let timestamp = RecorderEngine.logDateFormatter.string(from: Date())
-        let line = "[\(timestamp)] \(message)\n"
-        print(line, terminator: "")
-
-        // Rotate log if it exceeds configured limit
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: logFileURL.path),
-           let size = attrs[.size] as? Int64, size > ConfigManager.shared.maxLogFileSize {
-            try? FileManager.default.removeItem(at: logFileURL)
-        }
-
-        if let data = line.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: logFileURL.path) {
-                if let fh = try? FileHandle(forWritingTo: logFileURL) {
-                    fh.seekToEndOfFile()
-                    fh.write(data)
-                    fh.closeFile()
-                }
-            } else {
-                try? data.write(to: logFileURL)
-            }
-        }
+    var hasActiveWriter: Bool {
+        return recordingQueue.sync { writer != nil }
     }
 
     func syncQueue() {

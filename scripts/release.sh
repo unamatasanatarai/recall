@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-DRY_RUN="${DRY_RUN:-0}"
+# Anything other than a clear yes/no is rejected: a typo here must never turn a preview into a real release.
+case "${DRY_RUN:-0}" in
+    1 | true | TRUE | yes | YES) DRY_RUN=1 ;;
+    0 | false | FALSE | no | NO | "") DRY_RUN=0 ;;
+    *)
+        echo "❌ DRY_RUN must be 0 or 1 (got '${DRY_RUN}')."
+        exit 1
+        ;;
+esac
+RELEASE_BRANCH="${RELEASE_BRANCH:-master}"
 TARGET_VERSION=""
 
 for arg in "$@"; do
@@ -33,6 +42,11 @@ else
     NEW_VERSION="${TARGET_VERSION#v}"
 fi
 
+if ! [[ "${NEW_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "❌ Invalid version '${NEW_VERSION}' (expected MAJOR.MINOR.PATCH)."
+    exit 1
+fi
+
 TAG_NAME="v${NEW_VERSION}"
 
 echo "=========================================="
@@ -43,9 +57,41 @@ else
 fi
 echo "=========================================="
 
+# 0. Preflight: never release from a dirty tree or another branch, and never move a published tag.
+preflight_failure() {
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        echo "⚠️  [DRY RUN] $1 A real release would stop here."
+    else
+        echo "❌ $1"
+        exit 1
+    fi
+}
+
+if [ -n "$(git status --porcelain)" ]; then
+    preflight_failure "The working tree has uncommitted changes."
+fi
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "${CURRENT_BRANCH}" != "${RELEASE_BRANCH}" ]; then
+    preflight_failure "Releases are cut from ${RELEASE_BRANCH}, but ${CURRENT_BRANCH} is checked out."
+fi
+if git rev-parse -q --verify "refs/tags/${TAG_NAME}" >/dev/null; then
+    preflight_failure "Tag ${TAG_NAME} already exists."
+fi
+HAS_ORIGIN=0
+if git remote get-url origin >/dev/null 2>&1; then
+    HAS_ORIGIN=1
+    if git ls-remote --exit-code --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+        preflight_failure "Tag ${TAG_NAME} already exists on origin."
+    fi
+fi
+
 mkdir -p build
 
-# 1. Find previous tag or starting commit
+# 1. Run unit tests before changing anything
+echo "==> Running test suite..."
+./scripts/test.sh
+
+# 2. Find previous tag or starting commit
 PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 
 if [ -n "${PREV_TAG}" ]; then
@@ -56,7 +102,7 @@ else
     COMMIT_RANGE="HEAD"
 fi
 
-# 2. Generate categorized release notes markdown
+# 3. Generate categorized release notes markdown
 NOTES_FILE="build/RELEASE_NOTES.md"
 
 cat <<EOF >"${NOTES_FILE}"
@@ -109,20 +155,23 @@ echo "==> Generated Release Notes:"
 cat "${NOTES_FILE}"
 echo ""
 
-# 3. Update VERSION file
+# 4. Update VERSION file (restored if any later step fails)
 if [ "${DRY_RUN}" -eq 1 ]; then
     echo "==> [DRY RUN] Skipping VERSION file update (would update to ${NEW_VERSION})"
 else
     echo "${NEW_VERSION}" >VERSION
+    trap 'echo "❌ Release failed; restoring VERSION"; git checkout -- VERSION' ERR
     echo "==> Updated VERSION file to ${NEW_VERSION}"
 fi
 
-# 4. Run unit tests
-echo "==> Running test suite..."
-./scripts/test.sh
-
-# 5. Build application & DMG package
+# 5. Build application & DMG package. A real release always compiles from scratch, so the DMG
+#    can never contain a stale binary or an old version number.
 echo "==> Building installer DMG package..."
+if [ "${DRY_RUN}" -eq 1 ]; then
+    ./scripts/build.sh
+else
+    FORCE_BUILD=1 ./scripts/build.sh
+fi
 ./scripts/build_dmg.sh
 
 DMG_PATH="build/Recall-${TAG_NAME}.dmg"
@@ -151,25 +200,19 @@ if git diff --quiet --staged; then
 else
     git commit -m "chore(release): release ${TAG_NAME}"
 fi
+trap - ERR
 
 echo "==> Creating git tag ${TAG_NAME}..."
-git tag -a "${TAG_NAME}" -F "${NOTES_FILE}" --force
+git tag -a "${TAG_NAME}" -F "${NOTES_FILE}"
 
-# 7. Push git tag & commit to GitHub remote
-if git remote get-url origin >/dev/null 2>&1; then
-    echo "==> Pushing commits and tag ${TAG_NAME} to GitHub origin..."
-    git push origin master || true
-    git push origin "${TAG_NAME}" --force || true
+# 7. Push commit & tag. A failed push stops here, before anything is published.
+if [ "${HAS_ORIGIN}" -eq 1 ]; then
+    echo "==> Pushing ${RELEASE_BRANCH} and tag ${TAG_NAME} to origin..."
+    git push origin "${RELEASE_BRANCH}"
+    git push origin "${TAG_NAME}"
 fi
 
 # 8. Create GitHub Release using gh CLI
-if ! command -v gh &>/dev/null; then
-    if command -v brew &>/dev/null; then
-        echo "==> GitHub CLI (gh) not found. Installing via Homebrew..."
-        NONINTERACTIVE=1 brew install gh || true
-    fi
-fi
-
 if command -v gh &>/dev/null && gh auth status &>/dev/null; then
     echo "==> Creating GitHub Release via gh CLI..."
     gh release create "${TAG_NAME}" "${DMG_PATH}#Recall-${TAG_NAME}.dmg" \
@@ -178,15 +221,16 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null; then
     echo "==> GitHub Release ${TAG_NAME} successfully created!"
 else
     echo "--------------------------------------------------------"
-    echo "Notice: 'gh' CLI tool is not authenticated."
+    echo "Notice: the GitHub CLI (gh) is missing or not authenticated."
     echo "Git tag ${TAG_NAME} and release DMG created at:"
     echo "  ${DMG_PATH}"
     echo "Release notes written to:"
     echo "  ${NOTES_FILE}"
     echo ""
-    echo "To authenticate and create the GitHub Release, run:"
-    echo "  1. gh auth login"
-    echo "  2. gh release create ${TAG_NAME} \"${DMG_PATH}#Recall-${TAG_NAME}.dmg\" -t \"Recall ${TAG_NAME}\" -F ${NOTES_FILE}"
+    echo "To publish the GitHub Release, run:"
+    echo "  1. brew install gh   (if needed)"
+    echo "  2. gh auth login"
+    echo "  3. gh release create ${TAG_NAME} \"${DMG_PATH}#Recall-${TAG_NAME}.dmg\" -t \"Recall ${TAG_NAME}\" -F ${NOTES_FILE}"
     echo "--------------------------------------------------------"
 fi
 

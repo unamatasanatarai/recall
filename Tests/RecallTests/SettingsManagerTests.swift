@@ -160,4 +160,72 @@ struct SettingsManagerTests {
             throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Reset to defaults failed"])
         }
     }
+
+    private static func makeIsolatedDefaults() -> (UserDefaults, String) {
+        let suiteName = "RecallTests-\(UUID().uuidString)"
+        return (UserDefaults(suiteName: suiteName)!, suiteName)
+    }
+
+    static func testClampsOutOfRangeValues() throws {
+        let settings = SettingsManager.shared
+        settings.maxStorageMB = 0
+        try check(settings.maxStorageMB == ConfigManager.shared.minStorageMB, "0 MB should clamp to the minimum, got \(settings.maxStorageMB)")
+        try check(UserDefaults.standard.integer(forKey: "maxStorageMB") == ConfigManager.shared.minStorageMB, "The clamped value should be persisted")
+
+        settings.maxStorageMinutes = 1_000_000
+        try check(settings.maxStorageMinutes == ConfigManager.shared.maxAllowedStorageMinutes, "Huge values should clamp to the maximum, got \(settings.maxStorageMinutes)")
+        try check(settings.maxStorageDurationSeconds == TimeInterval(ConfigManager.shared.maxAllowedStorageMinutes) * 60, "Retention must see the clamped value")
+        settings.resetToDefaults()
+    }
+
+    static func testStoredOutOfRangeValuesAreClampedOnLaunch() throws {
+        let (defaults, suiteName) = makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(3, forKey: "maxStorageMB")
+        defaults.set(999_999, forKey: "maxStorageMinutes")
+
+        let settings = SettingsManager(defaults: defaults)
+        try check(settings.maxStorageMB == ConfigManager.shared.minStorageMB, "Stored 3 MB should clamp, got \(settings.maxStorageMB)")
+        try check(settings.maxStorageMinutes == ConfigManager.shared.maxAllowedStorageMinutes, "Stored minutes should clamp, got \(settings.maxStorageMinutes)")
+        try check(settings.maxBufferSizeBytes == Int64(ConfigManager.shared.minStorageMB) * 1024 * 1024, "Retention snapshot should use the clamped value")
+    }
+
+    static func testRecordingOptionsPersistAndNotify() throws {
+        let (defaults, suiteName) = makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = SettingsManager(defaults: defaults)
+        try check(settings.recordingOptions == RecordingOptions(), "Options should default to off")
+        var notifications = 0
+        settings.onRecordingOptionsChanged = { notifications += 1 }
+
+        settings.useHEVC = true
+        settings.recordAtNativeResolution = true
+        try check(notifications == 2, "Each option change should notify, got \(notifications)")
+        try check(settings.recordingOptions == RecordingOptions(recordAtNativeResolution: true, preferHEVC: true), "Unexpected options \(settings.recordingOptions)")
+
+        let reloaded = SettingsManager(defaults: defaults)
+        try check(reloaded.useHEVC && reloaded.recordAtNativeResolution, "Options should persist")
+    }
+
+    static func testStorageValuesAreSafeToReadFromBackgroundQueues() throws {
+        let (defaults, suiteName) = makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsManager(defaults: defaults)
+
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) {
+            for _ in 0..<5000 {
+                _ = settings.maxBufferSizeBytes
+                _ = settings.maxStorageDurationSeconds
+            }
+        }
+        for value in stride(from: 100, through: 2000, by: 50) {
+            settings.maxStorageMB = value
+            settings.maxStorageMinutes = value / 10
+        }
+        group.wait()
+
+        try check(settings.maxBufferSizeBytes == 2000 * 1024 * 1024, "Expected the last written limit, got \(settings.maxBufferSizeBytes)")
+    }
 }

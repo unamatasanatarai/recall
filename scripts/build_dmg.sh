@@ -9,10 +9,8 @@ FINAL_DMG="build/${DMG_NAME}"
 
 echo "==> Packaging ${DMG_NAME} with custom layout..."
 
-# 1. Ensure build/Recall.app exists
-if [ ! -d "build/Recall.app" ]; then
-    ./scripts/build.sh
-fi
+# 1. Ensure build/Recall.app is current (incremental: unchanged sources are not re-signed)
+./scripts/build.sh
 
 # 2. Ensure background image exists and is compiled
 echo "==> Generating DMG background image..."

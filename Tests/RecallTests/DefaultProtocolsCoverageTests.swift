@@ -7,29 +7,28 @@ struct DefaultProtocolsCoverageTests {
         provider.preflight = { true }
         provider.request = { false }
 
-        if !provider.preflightAccess() {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected preflight true"])
-        }
-        if provider.requestAccess() {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected request false"])
-        }
+        try check(provider.preflightAccess(), "Expected preflight true")
+        try check(!provider.requestAccess(), "Expected request false")
     }
 
     static func testDefaultAlertPresenter() throws {
         var presenter = DefaultAlertPresenter()
+        var shown: [String] = []
         presenter.modalRunner = { alert in
+            shown.append(alert.messageText)
             return .alertFirstButtonReturn
         }
-        if !presenter.confirmPurgeRecordings() {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected confirmPurgeRecordings true"])
-        }
+        try check(presenter.confirmPurgeRecordings(), "Expected confirmPurgeRecordings true")
+        try check(presenter.confirmLimitReduction(message: "Deletes 10 MB"), "Expected confirmLimitReduction true")
+        presenter.showError(title: "Export Failed", message: "Disk full")
 
         presenter.modalRunner = { alert in
+            shown.append(alert.messageText)
             return .alertSecondButtonReturn
         }
-        if presenter.confirmPurgeRecordings() {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected confirmPurgeRecordings false"])
-        }
+        try check(!presenter.confirmPurgeRecordings(), "Expected confirmPurgeRecordings false")
+        try check(!presenter.confirmLimitReduction(message: "Deletes 10 MB"), "Expected confirmLimitReduction false")
+        try check(shown.count == 5 && shown.contains("Export Failed"), "Unexpected alerts \(shown)")
     }
 
     static func testDefaultOpenPanelPresenter() throws {
@@ -43,9 +42,7 @@ struct DefaultProtocolsCoverageTests {
         presenter.chooseDirectory { path in
             doneModal = true
         }
-        if !doneModal {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected modal completion call"])
-        }
+        try check(doneModal, "Expected modal completion call")
 
         presenter.modalRunner = { panel in
             return .cancel
@@ -62,26 +59,13 @@ struct DefaultProtocolsCoverageTests {
         presenter.chooseDirectory { path in
             doneSheet = true
         }
-        if !doneSheet {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected sheet completion call"])
-        }
+        try check(doneSheet, "Expected sheet completion call")
     }
 
-    static func testDefaultFFmpegRunnerConcatAndTrim() throws {
-        var runner = DefaultFFmpegRunner()
-        runner.processRunner = { execURL, args in
-            return 0
-        }
-
-        let listURL = URL(fileURLWithPath: "/tmp/list.txt")
-        let outputURL = URL(fileURLWithPath: "/tmp/out.mp4")
-        let success = runner.concatAndTrim(listURL: listURL, outputURL: outputURL, excessSeconds: 1.5, ffmpegPath: "/usr/local/bin/ffmpeg")
-
-        if !success {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected concatAndTrim success"])
-        }
-
-        let runnerDefault = DefaultFFmpegRunner()
-        _ = runnerDefault.findFFmpegPath()
+    static func testDefaultVideoMetadataProviderReadsRealChunk() throws {
+        let directory = TestSandbox.makeDirectory("metadata")
+        let chunk = try TestMedia.writeChunk(in: directory, startDate: Date(), duration: 1.0)
+        let meta = DefaultVideoMetadataProvider().durationAndIsValid(for: chunk.url)
+        try check(meta.isValid && abs(meta.duration - 1.0) < 0.05, "Expected a valid 1 s chunk, got \(meta)")
     }
 }

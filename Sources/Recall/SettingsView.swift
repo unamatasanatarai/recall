@@ -6,13 +6,18 @@ struct SettingsView: View {
     @ObservedObject var windowController: SettingsWindowController = SettingsWindowController.shared
     var chunkStore: ChunkStore = ChunkManager.shared
     var openPanelPresenter: OpenPanelPresenter = DefaultOpenPanelPresenter()
+    var alertPresenter: AlertPresenter = DefaultAlertPresenter()
+    var loginItem: LoginItemControlling = LoginItemController()
     var onPurgeRecordings: () -> Void = { MenuBarManager.shared.purgeRecordings() }
-    @State private var currentDurationText: String = ""
-    @State private var currentSizeBytesText: String = ""
-    @State private var totalChunksCount: Int = 0
+    @State private var usage = ChunkUsage()
+    @State private var launchAtLogin = false
 
-    private let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
-
+    private static let numberFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .none
+        formatter.allowsFloats = false
+        return formatter
+    }()
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -22,14 +27,6 @@ struct SettingsView: View {
                     SettingsWindowController.shared.closeWindow()
                 }
                 .keyboardShortcut(.escape, modifiers: [])
-                .hidden()
-                .frame(width: 0, height: 0)
-
-                // Invisible Cmd+Q Key Shortcut for double Cmd+Q handling
-                Button("") {
-                    windowController.handleCmdQ()
-                }
-                .keyboardShortcut("q", modifiers: [.command])
                 .hidden()
                 .frame(width: 0, height: 0)
 
@@ -89,7 +86,7 @@ struct SettingsView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .frame(width: 68, alignment: .leading)
 
-                        TextField("", value: $settings.maxStorageMB, formatter: NumberFormatter())
+                        TextField("", value: storageMBBinding, formatter: SettingsView.numberFormatter)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
                             .frame(width: 52)
                             .multilineTextAlignment(.trailing)
@@ -98,7 +95,7 @@ struct SettingsView: View {
                             .font(.system(size: 13))
                             .frame(width: 54, alignment: .leading)
 
-                        Stepper("", value: $settings.maxStorageMB, in: ConfigManager.shared.minStorageMB...ConfigManager.shared.maxAllowedStorageMB, step: ConfigManager.shared.stepStorageMB)
+                        Stepper("", value: storageMBBinding, in: ConfigManager.shared.minStorageMB...ConfigManager.shared.maxAllowedStorageMB, step: ConfigManager.shared.stepStorageMB)
                             .labelsHidden()
 
                         // Reset size 🔄
@@ -116,14 +113,14 @@ struct SettingsView: View {
                     Spacer()
 
                     HStack(spacing: 4) {
-                        Text(currentSizeBytesText)
+                        Text(SettingsView.sizeText(usage, maxMB: settings.maxStorageMB))
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundColor(.secondary)
 
                         Button(action: {
                             onPurgeRecordings()
                         }) {
-                            Text("(\(totalChunksCount) clips)")
+                            Text("(\(usage.count) clips)")
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                                 .underline()
                                 .foregroundColor(.accentColor)
@@ -142,7 +139,7 @@ struct SettingsView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .frame(width: 68, alignment: .leading)
 
-                        TextField("", value: $settings.maxStorageMinutes, formatter: NumberFormatter())
+                        TextField("", value: storageMinutesBinding, formatter: SettingsView.numberFormatter)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
                             .frame(width: 52)
                             .multilineTextAlignment(.trailing)
@@ -151,7 +148,7 @@ struct SettingsView: View {
                             .font(.system(size: 13))
                             .frame(width: 54, alignment: .leading)
 
-                        Stepper("", value: $settings.maxStorageMinutes, in: ConfigManager.shared.minStorageMinutes...ConfigManager.shared.maxAllowedStorageMinutes, step: ConfigManager.shared.stepStorageMinutes)
+                        Stepper("", value: storageMinutesBinding, in: ConfigManager.shared.minStorageMinutes...ConfigManager.shared.maxAllowedStorageMinutes, step: ConfigManager.shared.stepStorageMinutes)
                             .labelsHidden()
 
                         // Reset time 🔄
@@ -168,12 +165,33 @@ struct SettingsView: View {
 
                     Spacer()
 
-                    Text(currentDurationText)
+                    Text(SettingsView.durationText(usage, maxMinutes: settings.maxStorageMinutes))
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
             }
             .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(NSColor.controlBackgroundColor))
+            )
+
+            // Card 3: Recording Options
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Launch Recall at login", isOn: launchAtLoginBinding)
+
+                Toggle("Record at native Retina resolution (sharper text, larger files)", isOn: $settings.recordAtNativeResolution)
+
+                Toggle("Use HEVC encoding (about 40% smaller files)", isOn: $settings.useHEVC)
+                    .disabled(!EncoderSupport.isHEVCHardwareEncoderAvailable)
+                    .help(EncoderSupport.isHEVCHardwareEncoderAvailable
+                          ? "Fits roughly twice the history into the same Max Size"
+                          : "This Mac has no hardware HEVC encoder")
+            }
+            .font(.system(size: 13))
+            .toggleStyle(.checkbox)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10)
                     .fill(Color(NSColor.controlBackgroundColor))
@@ -213,12 +231,29 @@ struct SettingsView: View {
     .frame(width: ConfigManager.shared.preferencesWindowWidth, height: ConfigManager.shared.preferencesWindowHeight)
     .animation(.spring(response: 0.28, dampingFraction: 0.72), value: windowController.isQuitPromptVisible)
     .onAppear {
-        updateUsageStats()
+        usage = chunkStore.usage
+        launchAtLogin = loginItem.isEnabled
     }
-    .onReceive(timer) { _ in
-        updateUsageStats()
+    .onReceive(chunkStore.usagePublisher) { newUsage in
+        usage = newUsage
     }
 }
+
+    // MARK: - Bindings
+
+    private var storageMBBinding: Binding<Int> {
+        Binding(get: { settings.maxStorageMB }, set: { applyStorageMB($0) })
+    }
+
+    private var storageMinutesBinding: Binding<Int> {
+        Binding(get: { settings.maxStorageMinutes }, set: { applyStorageMinutes($0) })
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(get: { launchAtLogin }, set: { setLaunchAtLogin($0) })
+    }
+
+    // MARK: - Actions
 
     func chooseDirectory() {
         openPanelPresenter.chooseDirectory { path in
@@ -229,24 +264,67 @@ struct SettingsView: View {
     }
 
     func resetStorageMB() {
-        settings.maxStorageMB = ConfigManager.shared.defaultMaxStorageMB
+        applyStorageMB(ConfigManager.shared.defaultMaxStorageMB)
     }
 
     func resetStorageMinutes() {
-        settings.maxStorageMinutes = ConfigManager.shared.defaultMaxStorageMinutes
+        applyStorageMinutes(ConfigManager.shared.defaultMaxStorageMinutes)
     }
 
-    private func updateUsageStats() {
-        let chunks = chunkStore.chunks
-        totalChunksCount = chunks.count
-        
-        let totalSecs = chunkStore.totalRecordedDuration
-        let mins = Int(totalSecs) / 60
-        let secs = Int(totalSecs) % 60
-        currentDurationText = String(format: "%dm %02ds / %dm max", mins, secs, settings.maxStorageMinutes)
+    /// Clamps the value and, when it would delete existing recordings, asks first.
+    func applyStorageMB(_ requested: Int) {
+        let value = SettingsManager.clampedStorageMB(requested)
+        let currentUsage = chunkStore.usage
+        let excessMB = (Double(currentUsage.totalBytes) - Double(value) * 1024 * 1024) / (1024 * 1024)
+        if value < settings.maxStorageMB, excessMB > 0 {
+            let message = String(format: "Lowering Max Size to %d MB permanently deletes the oldest %.0f MB of recordings.", value, excessMB)
+            guard alertPresenter.confirmLimitReduction(message: message) else {
+                // Re-render the field with the unchanged value.
+                settings.objectWillChange.send()
+                return
+            }
+        }
+        settings.maxStorageMB = value
+        if value != requested {
+            settings.objectWillChange.send()
+        }
+    }
 
-        let totalBytes = chunks.reduce(0) { $0 + $1.sizeBytes }
-        let mb = Double(totalBytes) / (1024.0 * 1024.0)
-        currentSizeBytesText = String(format: "%.1f MB / %d MB max", mb, settings.maxStorageMB)
+    func applyStorageMinutes(_ requested: Int) {
+        let value = SettingsManager.clampedStorageMinutes(requested)
+        let currentUsage = chunkStore.usage
+        let excessSeconds = currentUsage.totalDuration - TimeInterval(value) * 60
+        if value < settings.maxStorageMinutes, excessSeconds > 0 {
+            let message = "Lowering Max Time to \(value) minutes permanently deletes the oldest \(OverlayHUDBeamView.formatDuration(excessSeconds)) of recordings."
+            guard alertPresenter.confirmLimitReduction(message: message) else {
+                settings.objectWillChange.send()
+                return
+            }
+        }
+        settings.maxStorageMinutes = value
+        if value != requested {
+            settings.objectWillChange.send()
+        }
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            try loginItem.setEnabled(enabled)
+        } catch {
+            alertPresenter.showError(title: "Could Not Change Login Item", message: error.localizedDescription)
+        }
+        launchAtLogin = loginItem.isEnabled
+    }
+
+    // MARK: - Formatting
+
+    static func durationText(_ usage: ChunkUsage, maxMinutes: Int) -> String {
+        let totalSecs = Int(usage.totalDuration)
+        return String(format: "%dm %02ds / %dm max", totalSecs / 60, totalSecs % 60, maxMinutes)
+    }
+
+    static func sizeText(_ usage: ChunkUsage, maxMB: Int) -> String {
+        let mb = Double(usage.totalBytes) / (1024.0 * 1024.0)
+        return String(format: "%.1f MB / %d MB max", mb, maxMB)
     }
 }

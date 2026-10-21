@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"${SCRIPT_DIR}/generate_test_registry.sh"
+
 echo "==> Compiling test runner with code coverage instrumentation..."
 mkdir -p build/cov
 
@@ -13,7 +16,7 @@ swiftc \
     -profile-generate \
     -profile-coverage-mapping \
     -sdk "${SDK_PATH}" \
-    -target x86_64-apple-macos12.3 \
+    -target "$(uname -m)-apple-macos12.3" \
     -framework ScreenCaptureKit \
     -framework AVFoundation \
     -framework SwiftUI \
@@ -21,9 +24,13 @@ swiftc \
     -framework CoreMedia \
     -framework CoreVideo \
     -framework CoreGraphics \
-    -framework UniformTypeIdentifiers \
+    -framework IOSurface \
+    -framework VideoToolbox \
+    -framework ServiceManagement \
+    -framework UserNotifications \
     ${SOURCES} \
     ${TEST_SOURCES} \
+    build/generated/TestRegistry.swift \
     -o build/cov/test_runner_cov
 
 echo "==> Running instrumented test suite..."

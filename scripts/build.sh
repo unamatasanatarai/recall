@@ -21,41 +21,57 @@ fi
 SDK_PATH=$(xcrun --show-sdk-path)
 
 BINARY="build/Recall.app/Contents/MacOS/Recall"
+PLIST="build/Recall.app/Contents/Info.plist"
+OBJ_DIR="build/obj"
 
-# Determine if any source files are newer than the existing signed binary.
+# Determine if anything that goes into the bundle is newer than the existing signed binary.
 # swiftc embeds non-deterministic UUIDs/timestamps, so recompiling always
 # produces a different binary and therefore a new CDHash. macOS TCC ties
 # screen-recording permission to the CDHash, meaning a new signature
 # invalidates the grant. We avoid this by skipping compile+sign when
-# the sources haven't changed.
+# nothing changed. A VERSION bump, a non-universal binary or FORCE_BUILD=1
+# (used by release.sh) always rebuilds.
 NEEDS_BUILD=true
-if [ -f "${BINARY}" ] && [ -f "build/Recall.app/Contents/Info.plist" ]; then
-    NEWEST_SOURCE=$(find Sources/Recall -name '*.swift' -newer "${BINARY}" 2>/dev/null | head -n 1)
-    if [ -z "${NEWEST_SOURCE}" ]; then
+if [ "${FORCE_BUILD:-0}" != "1" ] && [ -f "${BINARY}" ] && [ -f "${PLIST}" ]; then
+    NEWEST_INPUT=$(find Sources/Recall VERSION scripts/build.sh -newer "${BINARY}" 2>/dev/null | head -n 1)
+    BUILT_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "${PLIST}" 2>/dev/null || echo "")
+    BUILT_ARCHS=$(lipo -archs "${BINARY}" 2>/dev/null || echo "")
+    if [ -z "${NEWEST_INPUT}" ] && [ "${BUILT_VERSION}" = "${VERSION}" ] &&
+        [[ "${BUILT_ARCHS}" == *arm64* && "${BUILT_ARCHS}" == *x86_64* ]]; then
         NEEDS_BUILD=false
     fi
 fi
 
 if [ "${NEEDS_BUILD}" = true ]; then
-    echo "==> Compiling Swift sources with swiftc..."
-    swiftc \
-        -O \
-        -sdk "${SDK_PATH}" \
-        -target x86_64-apple-macos12.3 \
-        -parse-as-library \
-        -framework ScreenCaptureKit \
-        -framework AVFoundation \
-        -framework SwiftUI \
-        -framework AppKit \
-        -framework CoreMedia \
-        -framework CoreVideo \
-        -framework CoreGraphics \
-        -framework UniformTypeIdentifiers \
-        Sources/Recall/*.swift \
-        -o "${BINARY}"
+    mkdir -p "${OBJ_DIR}"
+    for ARCH in arm64 x86_64; do
+        echo "==> Compiling Swift sources with swiftc (${ARCH})..."
+        swiftc \
+            -O \
+            -wmo \
+            -sdk "${SDK_PATH}" \
+            -target "${ARCH}-apple-macos12.3" \
+            -parse-as-library \
+            -framework ScreenCaptureKit \
+            -framework AVFoundation \
+            -framework SwiftUI \
+            -framework AppKit \
+            -framework CoreMedia \
+            -framework CoreVideo \
+            -framework CoreGraphics \
+            -framework IOSurface \
+            -framework VideoToolbox \
+            -framework ServiceManagement \
+            -framework UserNotifications \
+            Sources/Recall/*.swift \
+            -o "${OBJ_DIR}/Recall-${ARCH}"
+    done
+
+    echo "==> Creating universal binary (arm64 + x86_64)..."
+    lipo -create "${OBJ_DIR}/Recall-arm64" "${OBJ_DIR}/Recall-x86_64" -output "${BINARY}"
 
     echo "==> Writing Info.plist (v${VERSION})..."
-    cat <<EOF >build/Recall.app/Contents/Info.plist
+    cat <<EOF >"${PLIST}"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

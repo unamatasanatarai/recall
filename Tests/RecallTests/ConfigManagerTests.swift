@@ -4,77 +4,40 @@ import CoreGraphics
 struct ConfigManagerTests {
     static func testDefaultConfigurationValues() throws {
         let config = ConfigManager.shared
-        config.resetToDefaults()
 
-        if config.maxChunkDuration != 10.0 {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected maxChunkDuration to be 10.0"])
-        }
-        if config.defaultMaxStorageMB != 1000 {
-            throw NSError(domain: "TestError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Expected defaultMaxStorageMB to be 1000"])
-        }
-        if config.defaultMaxStorageMinutes != 60 {
-            throw NSError(domain: "TestError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Expected defaultMaxStorageMinutes to be 60"])
-        }
-        if config.minDragDistance != 200.0 {
-            throw NSError(domain: "TestError", code: 4, userInfo: [NSLocalizedDescriptionKey: "Expected minDragDistance to be 200.0"])
-        }
-        if config.screenHeightDragRatio != 0.5 {
-            throw NSError(domain: "TestError", code: 5, userInfo: [NSLocalizedDescriptionKey: "Expected screenHeightDragRatio to be 0.5"])
-        }
-        if config.dragTimeStepSeconds != 60.0 {
-            throw NSError(domain: "TestError", code: 6, userInfo: [NSLocalizedDescriptionKey: "Expected dragTimeStepSeconds to be 60.0"])
-        }
-        if config.minExportOffsetSeconds != 1.0 {
-            throw NSError(domain: "TestError", code: 7, userInfo: [NSLocalizedDescriptionKey: "Expected minExportOffsetSeconds to be 1.0"])
-        }
-        if config.doublePressQuitThreshold != 2.0 {
-            throw NSError(domain: "TestError", code: 8, userInfo: [NSLocalizedDescriptionKey: "Expected doublePressQuitThreshold to be 2.0"])
-        }
+        try check(config.maxChunkDuration == 10.0, "Expected maxChunkDuration to be 10.0")
+        try check(config.targetFrameRate == 30, "Expected 30 fps")
+        try check(config.defaultMaxStorageMB == 1000, "Expected defaultMaxStorageMB to be 1000")
+        try check(config.defaultMaxStorageMinutes == 60, "Expected defaultMaxStorageMinutes to be 60")
+        try check(config.minDragDistance == 200.0, "Expected minDragDistance to be 200.0")
+        try check(config.screenHeightDragRatio == 0.5, "Expected screenHeightDragRatio to be 0.5")
+        try check(config.minExportOffsetSeconds == 1.0, "Expected minExportOffsetSeconds to be 1.0")
+        try check(config.doublePressQuitThreshold == 2.0, "Expected doublePressQuitThreshold to be 2.0")
     }
 
-    static func testDefaultLocationsPaths() throws {
-        let config = ConfigManager.shared
-        let exportsURL = config.defaultExportsDirectory
-        if !exportsURL.path.contains("Recall-exports") {
-            throw NSError(domain: "TestError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Exports URL path mismatch: \(exportsURL.path)"])
-        }
-
-        let chunksURL = config.defaultChunksDirectory
-        if !chunksURL.path.contains("chunks") {
-            throw NSError(domain: "TestError", code: 10, userInfo: [NSLocalizedDescriptionKey: "Chunks directory path mismatch: \(chunksURL.path)"])
-        }
-
-        let logURL = config.defaultLogFileURL
-        if !logURL.path.contains("recall_debug.log") {
-            throw NSError(domain: "TestError", code: 11, userInfo: [NSLocalizedDescriptionKey: "Log file URL path mismatch: \(logURL.path)"])
-        }
+    static func testExportOffsetStepsStartFineAndIncrease() throws {
+        let steps = ConfigManager.shared.exportOffsetSteps
+        try check(steps.first == 10, "The first drag step should be 10 s, got \(String(describing: steps.first))")
+        try check(zip(steps, steps.dropFirst()).allSatisfy { $0 < $1 }, "Steps must be strictly increasing")
     }
 
-    static func testConfigResetToDefaults() throws {
+    static func testStorageLivesInPrivateCacheDirectory() throws {
         let config = ConfigManager.shared
-        config.maxChunkDuration = 25.0
-        config.defaultMaxStorageMB = 5000
-        config.minDragDistance = 350.0
+        // The test runner points RECALL_CACHE_DIR at a sandbox.
+        try check(config.cacheDirectoryOverride != nil, "Tests must run with RECALL_CACHE_DIR set")
+        try check(config.defaultBaseCacheDirectory == config.cacheDirectoryOverride, "The override must win")
+        try check(config.defaultChunksDirectory.lastPathComponent == "chunks.noindex", "Chunks need the .noindex suffix to stay out of Spotlight")
+        try check(config.legacyCacheDirectory == nil, "Legacy migration must be disabled under an override")
+    }
 
-        config.resetToDefaults()
-
-        if config.maxChunkDuration != 10.0 || config.defaultMaxStorageMB != 1000 || config.minDragDistance != 200.0 {
-            throw NSError(domain: "TestError", code: 12, userInfo: [NSLocalizedDescriptionKey: "resetToDefaults failed to restore initial parameters"])
-        }
+    static func testDefaultExportsLocation() throws {
+        try check(ConfigManager.shared.defaultExportsDirectory.path.hasSuffix("Movies/Recall-exports"), "Exports URL path mismatch: \(ConfigManager.shared.defaultExportsDirectory.path)")
     }
 
     static func testSettingsManagerIntegrationWithConfig() throws {
         let config = ConfigManager.shared
-        config.resetToDefaults()
-
-        if SettingsManager.defaultMaxStorageMB != config.defaultMaxStorageMB {
-            throw NSError(domain: "TestError", code: 13, userInfo: [NSLocalizedDescriptionKey: "SettingsManager defaultMaxStorageMB out of sync with ConfigManager"])
-        }
-        if SettingsManager.defaultMaxStorageMinutes != config.defaultMaxStorageMinutes {
-            throw NSError(domain: "TestError", code: 14, userInfo: [NSLocalizedDescriptionKey: "SettingsManager defaultMaxStorageMinutes out of sync with ConfigManager"])
-        }
-        if SettingsManager.defaultExportsDirectory.path != config.defaultExportsDirectory.path {
-            throw NSError(domain: "TestError", code: 15, userInfo: [NSLocalizedDescriptionKey: "SettingsManager defaultExportsDirectory out of sync with ConfigManager"])
-        }
+        try check(SettingsManager.defaultMaxStorageMB == config.defaultMaxStorageMB, "SettingsManager defaultMaxStorageMB out of sync with ConfigManager")
+        try check(SettingsManager.defaultMaxStorageMinutes == config.defaultMaxStorageMinutes, "SettingsManager defaultMaxStorageMinutes out of sync with ConfigManager")
+        try check(SettingsManager.defaultExportsDirectory.path == config.defaultExportsDirectory.path, "SettingsManager defaultExportsDirectory out of sync with ConfigManager")
     }
 }

@@ -4,19 +4,33 @@ import SwiftUI
 final class HUDViewModel: ObservableObject {
     @Published var startPoint: CGPoint = .zero
     @Published var currentPoint: CGPoint = .zero
+    @Published var badgeCenter: CGPoint = .zero
     @Published var offsetSeconds: TimeInterval = 0
+    @Published var label: String = ""
 }
 
 final class OverlayHUDWindow: NSWindow {
     static let shared = OverlayHUDWindow()
 
+    /// Room around the beam for its glow and the knob at its end.
+    static let beamMargin: CGFloat = 40
+    static let badgeSize = CGSize(width: 210, height: 30)
+    private static let badgeGap: CGFloat = 24
+    private static let edgeInset: CGFloat = 8
+
+    /// Window frame (screen coordinates) and the points to draw, in the window's top-left view space.
+    struct Layout: Equatable {
+        let frame: NSRect
+        let startPoint: CGPoint
+        let currentPoint: CGPoint
+        let badgeCenter: CGPoint
+    }
+
     private let viewModel = HUDViewModel()
-    private var hostingView: NSHostingView<OverlayHUDBeamView>?
 
     private init() {
-        let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         super.init(
-            contentRect: screenFrame,
+            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -26,29 +40,56 @@ final class OverlayHUDWindow: NSWindow {
         self.level = .popUpMenu
         self.ignoresMouseEvents = true
         self.hasShadow = false
+        // Keep the beam out of screenshots and screen sharing wherever the system honours it.
+        // ScreenCaptureKit recording excludes it explicitly.
+        self.sharingType = .none
 
-        let beamView = OverlayHUDBeamView(viewModel: viewModel)
-        let hosting = NSHostingView(rootView: beamView)
-        self.contentView = hosting
-        self.hostingView = hosting
+        self.contentView = NSHostingView(rootView: OverlayHUDBeamView(viewModel: viewModel))
     }
 
-    func show(at mouseLocation: NSPoint, startLocation: NSPoint, offsetSeconds: TimeInterval) {
-        guard let mainScreen = NSScreen.main else { return }
-        let screenFrame = mainScreen.frame
+    /// Sizes the window to the beam and badge rather than the whole screen, so the blurred
+    /// layers are composited over a small area. The badge flips to the left of the knob when it
+    /// would run off the right edge (status items sit near it).
+    static func layout(start: NSPoint, current: NSPoint, screenFrame: NSRect, badgeSize: CGSize = OverlayHUDWindow.badgeSize) -> Layout {
+        let halfWidth = badgeSize.width / 2
+        var badgeX = current.x + badgeGap + halfWidth
+        if badgeX + halfWidth > screenFrame.maxX - edgeInset {
+            badgeX = current.x - badgeGap - halfWidth
+        }
+        badgeX = min(max(badgeX, screenFrame.minX + edgeInset + halfWidth), screenFrame.maxX - edgeInset - halfWidth)
+        let badgeY = current.y - 14
+        let badgeRect = NSRect(x: badgeX - halfWidth, y: badgeY - badgeSize.height / 2, width: badgeSize.width, height: badgeSize.height)
 
-        if self.frame != screenFrame {
-            self.setFrame(screenFrame, display: true)
+        let beamRect = NSRect(
+            x: min(start.x, current.x),
+            y: min(start.y, current.y),
+            width: abs(current.x - start.x),
+            height: abs(current.y - start.y)
+        ).insetBy(dx: -beamMargin, dy: -beamMargin)
+
+        let frame = beamRect.union(badgeRect.insetBy(dx: -12, dy: -12)).intersection(screenFrame).integral
+
+        func viewPoint(_ point: NSPoint) -> CGPoint {
+            // Cocoa screen coordinates (origin bottom-left) to SwiftUI view coordinates (origin top-left)
+            return CGPoint(x: point.x - frame.minX, y: frame.maxY - point.y)
+        }
+        return Layout(frame: frame, startPoint: viewPoint(start), currentPoint: viewPoint(current), badgeCenter: viewPoint(NSPoint(x: badgeX, y: badgeY)))
+    }
+
+    func show(at mouseLocation: NSPoint, startLocation: NSPoint, offsetSeconds: TimeInterval, startDate: Date? = nil, screen: NSScreen? = nil) {
+        guard let screen = screen ?? NSScreen.main else { return }
+        let layout = OverlayHUDWindow.layout(start: startLocation, current: mouseLocation, screenFrame: screen.frame)
+
+        if self.frame != layout.frame {
+            self.setFrame(layout.frame, display: false)
         }
 
-        // Convert Cocoa screen coordinates (origin bottom-left) to SwiftUI view coordinates (origin top-left)
-        let startViewPoint = CGPoint(x: startLocation.x, y: screenFrame.height - startLocation.y)
-        let currentViewPoint = CGPoint(x: mouseLocation.x, y: screenFrame.height - mouseLocation.y)
-
         // Reactive update of ViewModel properties without destroying NSHostingView tree
-        viewModel.startPoint = startViewPoint
-        viewModel.currentPoint = currentViewPoint
+        viewModel.startPoint = layout.startPoint
+        viewModel.currentPoint = layout.currentPoint
+        viewModel.badgeCenter = layout.badgeCenter
         viewModel.offsetSeconds = offsetSeconds
+        viewModel.label = OverlayHUDBeamView.formatTimeOffset(offsetSeconds, startDate: startDate ?? Date().addingTimeInterval(-offsetSeconds))
 
         if !self.isVisible {
             self.orderFrontRegardless()
@@ -96,7 +137,8 @@ struct OverlayHUDBeamView: View {
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
 
@@ -197,26 +239,34 @@ struct OverlayHUDBeamView: View {
             .position(x: viewModel.currentPoint.x, y: viewModel.currentPoint.y)
 
             // macOS Glassmorphism HUD Badge
-            HUDTimeBadge(timeText: OverlayHUDBeamView.formatTimeOffset(viewModel.offsetSeconds))
-                .position(x: viewModel.currentPoint.x + 95, y: viewModel.currentPoint.y + 14)
+            HUDTimeBadge(timeText: viewModel.label)
+                .position(x: viewModel.badgeCenter.x, y: viewModel.badgeCenter.y)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    static func formatTimeOffset(_ seconds: TimeInterval, referenceDate: Date = Date()) -> String {
-        let mins = max(0.5, seconds / 60.0)
-        let minsFormatted: String
-        if mins.truncatingRemainder(dividingBy: 1.0) == 0 {
-            minsFormatted = String(format: "%.0f", mins)
-        } else {
-            minsFormatted = String(format: "%.1f", mins)
+    /// "45s", "2m 30s", "1h 15m".
+    static func formatDuration(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        if total < 60 {
+            return "\(total)s"
         }
+        if total < 3600 {
+            let mins = total / 60
+            let secs = total % 60
+            return secs == 0 ? "\(mins)m" : "\(mins)m \(secs)s"
+        }
+        let hours = total / 3600
+        let mins = (total % 3600) / 60
+        return mins == 0 ? "\(hours)h" : "\(hours)h \(mins)m"
+    }
 
-        let roundedMins = (seconds / 60.0).rounded()
-        let targetDate = Date(timeIntervalSince1970: referenceDate.timeIntervalSince1970 - (roundedMins * 60.0))
-        let clockTime = OverlayHUDBeamView.timeFormatter.string(from: targetDate)
-
-        return "\(clockTime) (-\(minsFormatted)min)"
+    /// Clock time where the clip starts and how much footage it holds, e.g. "14:27:30 (-2m 30s)".
+    static func formatTimeOffset(_ seconds: TimeInterval, startDate: Date) -> String {
+        guard seconds >= ConfigManager.shared.minExportOffsetSeconds else {
+            return "Nothing recorded yet"
+        }
+        return "\(OverlayHUDBeamView.timeFormatter.string(from: startDate)) (-\(formatDuration(seconds)))"
     }
 }
 
@@ -235,6 +285,8 @@ struct HUDTimeBadge: View {
             Text(timeText)
                 .font(.system(.subheadline, design: .monospaced).weight(.bold))
                 .foregroundColor(.white)
+                .lineLimit(1)
+                .fixedSize()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)

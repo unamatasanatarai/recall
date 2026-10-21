@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build run launch test clean reset-cache install dmg release release-dry-run kill revoke
+.PHONY: help build run launch test test-tsan coverage clean reset-cache install dmg release release-dry-run kill revoke
 
 # Load configurations dynamically from scripts/config.sh or environment
 APP_NAME ?= $(shell bash -c 'source scripts/config.sh 2>/dev/null && echo "$$APP_NAME"' 2>/dev/null)
@@ -32,15 +32,24 @@ launch: kill
 	@echo "==> Launching $(APP_NAME).app (no rebuild)..."
 	@open "build/$(APP_NAME).app"
 
-## kill running apps
-kill: 
+## kill: Quit running $(APP_NAME) instances (waits while they save the current chunk)
+kill:
 	@echo "==> Terminating existing $(APP_NAME) instances..."
 	@killall "$(APP_NAME)" 2>/dev/null || pkill -x "$(APP_NAME)" 2>/dev/null || true
-	@sleep 0.2
+	@for i in $$(seq 1 80); do pgrep -x "$(APP_NAME)" >/dev/null || exit 0; sleep 0.1; done; \
+		echo "⚠️  $(APP_NAME) is still running"
 
 ## test: Run native Swift unit test suite
 test:
 	@./scripts/test.sh
+
+## test-tsan: Run the unit test suite under ThreadSanitizer
+test-tsan:
+	@SANITIZE=thread ./scripts/test.sh
+
+## coverage: Print a code coverage report for the unit test suite
+coverage:
+	@./scripts/coverage.sh
 
 ## reset-cache: Clear macOS LaunchServices and IconServices caches
 reset-cache:

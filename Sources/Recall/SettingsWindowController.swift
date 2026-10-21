@@ -5,15 +5,6 @@ final class PreferencesWindow: NSWindow {
     override func cancelOperation(_ sender: Any?) {
         self.close()
     }
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-           event.charactersIgnoringModifiers == "q" {
-            SettingsWindowController.shared.handleCmdQ()
-            return true
-        }
-        return super.performKeyEquivalent(with: event)
-    }
 }
 
 final class SettingsWindowController: NSObject, ObservableObject, NSWindowDelegate {
@@ -70,31 +61,21 @@ final class SettingsWindowController: NSObject, ObservableObject, NSWindowDelega
     }
 
     func handleCmdQ(now: Date = Date()) {
-        if let lastTime = lastCmdQPressTime {
-            let elapsed = now.timeIntervalSince(lastTime)
-            if elapsed < 0.05 {
-                // Ignore duplicate event dispatched in the same keystroke
-                return
-            }
-            if elapsed <= doublePressThreshold {
-                // Second Cmd+Q within threshold -> close settings and quit application
-                resetQuitPrompt()
-                closeWindow()
-                quitHandler()
-                return
-            }
+        if let lastTime = lastCmdQPressTime, now.timeIntervalSince(lastTime) <= doublePressThreshold {
+            // Second Cmd+Q within threshold -> close settings and quit application
+            resetQuitPrompt()
+            closeWindow()
+            quitHandler()
+            return
         }
 
         // First press (or previous press timed out)
         lastCmdQPressTime = now
         isQuitPromptVisible = true
-        NotificationCenter.default.post(name: Notification.Name("RecallQuitPromptNotification"), object: nil)
 
         quitPromptResetTimer?.invalidate()
         quitPromptResetTimer = Timer.scheduledTimer(withTimeInterval: doublePressThreshold, repeats: false) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.resetQuitPrompt()
-            }
+            self?.resetQuitPrompt()
         }
     }
 
@@ -105,16 +86,23 @@ final class SettingsWindowController: NSObject, ObservableObject, NSWindowDelega
         quitPromptResetTimer = nil
     }
 
+    /// The single Cmd+Q path while Preferences is open. A local monitor sees the key before the
+    /// main menu's Quit item does, so the first press only shows the prompt.
+    func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+              event.charactersIgnoringModifiers?.lowercased() == "q" else { return event }
+        // Holding the keys down must not count as a second press.
+        if !event.isARepeat {
+            handleCmdQ()
+        }
+        return nil
+    }
+
     func startMonitoringKeyEvents() {
         guard keyEventMonitor == nil else { return }
         keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, self.isWindowVisible else { return event }
-            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-               event.charactersIgnoringModifiers == "q" {
-                self.handleCmdQ()
-                return nil
-            }
-            return event
+            return self.handleKeyDown(event)
         }
     }
 
@@ -131,4 +119,3 @@ final class SettingsWindowController: NSObject, ObservableObject, NSWindowDelega
         resetQuitPrompt()
     }
 }
-

@@ -3,21 +3,24 @@ import Foundation
 struct FileSystemErrorTests {
     static func testPermissionDeniedDirectoryHandling() throws {
         let fileSystem = MockFileSystem()
-        let tempDir = URL(fileURLWithPath: "/non_existent_restricted_dir")
-        
+        let directory = URL(fileURLWithPath: "/non_existent_restricted_dir")
+        fileSystem.failingDirectories = [directory.path]
         let manager = ChunkManager(
             config: MockStorageConfig(),
             fileSystem: fileSystem,
-            ffmpegRunner: MockFFmpegRunner(),
             metadataProvider: MockVideoMetadataProvider(),
-            chunksDirectory: tempDir
+            chunksDirectory: directory
         )
 
-        // loadExistingChunks should handle error without crashing
+        // An unreadable directory must leave an empty, consistent index rather than crash.
         manager.loadExistingChunks()
-        if manager.chunks.count != 0 {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected 0 chunks for invalid directory"])
-        }
+        manager.syncQueue()
+        try check(manager.chunks.isEmpty && manager.usage == ChunkUsage(), "Expected an empty index for an unreadable directory")
+
+        // Purging an unreadable directory must not throw either.
+        manager.purgeAllChunks()
+        manager.syncQueue()
+        try check(manager.chunks.isEmpty, "Expected an empty index after purging")
     }
 
     static func testDiskFullAttributesHandling() throws {
@@ -26,45 +29,35 @@ struct FileSystemErrorTests {
         let manager = ChunkManager(
             config: MockStorageConfig(),
             fileSystem: fileSystem,
-            ffmpegRunner: MockFFmpegRunner(),
             metadataProvider: MockVideoMetadataProvider(),
             chunksDirectory: tempDir
         )
+        manager.syncQueue()
 
-        let fileURL = tempDir.appendingPathComponent("chunk_full.mp4")
         // file not in fileSystem.files dictionary -> attributesOfItem throws error
-        manager.registerChunk(url: fileURL, startTime: Date(), duration: 10.0)
+        manager.registerChunk(url: tempDir.appendingPathComponent("chunk_full.mp4"), startTime: Date(), duration: 10.0)
+        manager.syncQueue()
 
-        // Should drop file gracefully
-        if manager.chunks.count != 0 {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected corrupt/missing attribute chunk to be dropped"])
-        }
+        try check(manager.chunks.isEmpty, "Expected corrupt/missing attribute chunk to be dropped")
     }
 
     static func testFileRemovalErrorResilience() throws {
         let fileSystem = MockFileSystem()
         let tempDir = URL(fileURLWithPath: "/tmp/file_removal_test_\(UUID().uuidString)")
         let manager = ChunkManager(
-            config: MockStorageConfig(),
+            config: MockStorageConfig(maxBufferSizeBytes: 100, maxStorageDurationSeconds: 3600),
             fileSystem: fileSystem,
-            ffmpegRunner: MockFFmpegRunner(),
             metadataProvider: MockVideoMetadataProvider(),
             chunksDirectory: tempDir
         )
+        manager.syncQueue()
 
         let chunk1 = tempDir.appendingPathComponent("chunk1.mp4")
-        fileSystem.files[chunk1] = [.size: Int64(2000)]
+        fileSystem.setFile(chunk1, attributes: [.size: Int64(2000)])
         manager.registerChunk(url: chunk1, startTime: Date(), duration: 30.0)
-
-        // enforceLimits should execute resilience logic without crashing
         manager.enforceLimits()
-    }
+        manager.syncQueue()
 
-    static func testNonCreatableExportDirectoryFallback() throws {
-        let path = "~/Movies/Recall-exports"
-        let expanded = (path as NSString).expandingTildeInPath
-        if expanded.hasPrefix("~") {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Tilde expansion failed"])
-        }
+        try check(manager.chunks.isEmpty, "An oversized chunk should be purged")
     }
 }

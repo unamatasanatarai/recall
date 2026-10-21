@@ -1,177 +1,132 @@
 import Foundation
 import AVFoundation
-import CoreMedia
-import CoreVideo
 
 struct ChunkManagerExportTests {
+    private static func export(_ manager: ChunkManager, footage: TimeInterval, endDate: Date) throws -> Result<URL, ExportError> {
+        var result: Result<URL, ExportError>?
+        manager.exportClip(ExportRequest(footageSeconds: footage, endDate: endDate)) { result = $0 }
+        try check(waitUntil(timeout: 20) { result != nil }, "Export did not complete")
+        return result!
+    }
+
+    /// Three consecutive 2 s chunks on disk, registered with a real chunk manager.
+    private static func makeRecordedManager(exportsDirectory: URL, exportSessionFactory: @escaping (AVAsset, String) -> AVAssetExportSession? = { AVAssetExportSession(asset: $0, presetName: $1) }) throws -> (ChunkManager, [ChunkWriter.FinishedChunk]) {
+        let chunksDirectory = TestSandbox.makeDirectory("export_chunks")
+        let manager = ChunkManager(
+            config: MockStorageConfig(exportsDirectoryURL: exportsDirectory),
+            fileSystem: FileManager.default,
+            exportSessionFactory: exportSessionFactory,
+            chunksDirectory: chunksDirectory
+        )
+        // The initial scan must finish before chunks are written, or it would treat them as crash leftovers.
+        manager.syncQueue()
+        let firstStart = Date().addingTimeInterval(-60)
+        var chunks: [ChunkWriter.FinishedChunk] = []
+        for index in 0..<3 {
+            let chunk = try TestMedia.writeChunk(in: chunksDirectory, startDate: firstStart.addingTimeInterval(Double(index) * 2), duration: 2.0)
+            manager.registerChunk(url: chunk.url, startTime: chunk.startDate, duration: chunk.duration)
+            chunks.append(chunk)
+        }
+        manager.syncQueue()
+        try check(manager.chunks.count == 3, "Expected 3 indexed chunks, got \(manager.chunks.count)")
+        return (manager, chunks)
+    }
+
     static func testExportClip_emptyChunkGuard() throws {
-        let fileSystem = MockFileSystem()
-        let tempDir = URL(fileURLWithPath: "/tmp/recall_export_test_\(UUID().uuidString)")
         let manager = ChunkManager(
             config: MockStorageConfig(),
-            fileSystem: fileSystem,
-            ffmpegRunner: MockFFmpegRunner(),
+            fileSystem: MockFileSystem(),
             metadataProvider: MockVideoMetadataProvider(),
-            chunksDirectory: tempDir
+            chunksDirectory: URL(fileURLWithPath: "/tmp/recall_export_test_\(UUID().uuidString)")
         )
 
-        var completed = false
-        var exportedResultURL: URL? = nil
+        let result = try export(manager, footage: 30, endDate: Date())
+        try check(result == .failure(.noFootage), "Expected .noFootage when the store is empty, got \(result)")
+    }
 
-        manager.exportClip(offsetSeconds: 30.0) { url in
-            exportedResultURL = url
-            completed = true
+    static func testExportClip_passthroughTrimsHeadAndTail() throws {
+        let exportsDirectory = TestSandbox.makeDirectory("exports")
+        let (manager, chunks) = try makeRecordedManager(exportsDirectory: exportsDirectory)
+
+        // End 0.5 s into the last chunk (the moment the drag started) and take 3 s of footage.
+        let endDate = chunks[2].startDate.addingTimeInterval(0.5)
+        let result = try export(manager, footage: 3.0, endDate: endDate)
+        let url = try result.get()
+
+        try check(url.deletingLastPathComponent().standardizedFileURL == exportsDirectory.standardizedFileURL, "Export written outside the exports directory: \(url.path)")
+        try check(url.lastPathComponent.hasPrefix("Recall_") && url.pathExtension == "mp4", "Unexpected export name \(url.lastPathComponent)")
+        let duration = TestMedia.duration(of: url)
+        try check(abs(duration - 3.0) < 0.15, "Expected a 3.0 s clip, got \(duration) s")
+    }
+
+    static func testExportClip_reencodesWhenPassthroughUnavailable() throws {
+        var presetsRequested: [String] = []
+        let exportsDirectory = TestSandbox.makeDirectory("exports_fallback")
+        let (manager, chunks) = try makeRecordedManager(exportsDirectory: exportsDirectory) { asset, preset in
+            presetsRequested.append(preset)
+            return preset == AVAssetExportPresetPassthrough ? nil : AVAssetExportSession(asset: asset, presetName: preset)
         }
 
-        let timeout = Date().addingTimeInterval(1.0)
-        while !completed && Date() < timeout {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        }
-        manager.syncQueue()
+        let result = try export(manager, footage: 1.5, endDate: chunks[2].startDate.addingTimeInterval(2.0))
+        let url = try result.get()
 
-        if !completed || exportedResultURL != nil {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected nil export URL when store is empty"])
+        try check(presetsRequested == [AVAssetExportPresetPassthrough, AVAssetExportPresetHighestQuality], "Unexpected presets \(presetsRequested)")
+        try check(abs(TestMedia.duration(of: url) - 1.5) < 0.2, "Re-encoded clip has the wrong duration")
+    }
+
+    static func testExportClip_failsWhenNoExportSessionAvailable() throws {
+        let exportsDirectory = TestSandbox.makeDirectory("exports_none")
+        let (manager, chunks) = try makeRecordedManager(exportsDirectory: exportsDirectory) { _, _ in nil }
+
+        let result = try export(manager, footage: 2, endDate: chunks[2].startDate.addingTimeInterval(2.0))
+        guard case .failure(.failed) = result else {
+            throw TestFailure(description: "Expected a .failed result, got \(result)")
+        }
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: exportsDirectory.path)
+        try check(leftovers.isEmpty, "A failed export must not leave files behind: \(leftovers)")
+    }
+
+    static func testExportClip_neverOverwritesEarlierExport() throws {
+        let exportsDirectory = TestSandbox.makeDirectory("exports_unique")
+        let (manager, chunks) = try makeRecordedManager(exportsDirectory: exportsDirectory)
+        let endDate = chunks[2].startDate.addingTimeInterval(2.0)
+
+        let first = try export(manager, footage: 1, endDate: endDate).get()
+        let second = try export(manager, footage: 1, endDate: endDate).get()
+
+        try check(first != second, "Second export reused the first export's name")
+        try check(second.deletingPathExtension().lastPathComponent == first.deletingPathExtension().lastPathComponent + "-2", "Unexpected second name \(second.lastPathComponent)")
+        try check(FileManager.default.fileExists(atPath: first.path) && FileManager.default.fileExists(atPath: second.path), "Both exports should exist")
+    }
+
+    static func testExportClip_reportsUnwritableExportDirectory() throws {
+        // A folder that cannot exist (say an unmounted drive) must produce a reported failure.
+        let (manager, chunks) = try makeRecordedManager(exportsDirectory: URL(fileURLWithPath: "/dev/null/Recall-exports"))
+        let result = try export(manager, footage: 2, endDate: chunks[2].startDate.addingTimeInterval(2.0))
+        guard case .failure(.failed) = result else {
+            throw TestFailure(description: "Expected a reported failure for an unwritable export folder, got \(result)")
         }
     }
 
-    static func testExportClip_chunkSelectionAndTrimming() throws {
+    static func testExportClip_skipsUnreadableChunks() throws {
+        let exportsDirectory = TestSandbox.makeDirectory("exports_unreadable")
         let fileSystem = MockFileSystem()
-        let tempDir = URL(fileURLWithPath: "/tmp/recall_export_test_\(UUID().uuidString)")
-        let mockRunner = MockFFmpegRunner(ffmpegPathToReturn: "/usr/local/bin/ffmpeg", concatAndTrimResult: true, fileSystem: fileSystem)
-        
+        let chunksDirectory = URL(fileURLWithPath: "/tmp/recall_unreadable_\(UUID().uuidString)")
         let manager = ChunkManager(
-            config: MockStorageConfig(),
+            config: MockStorageConfig(exportsDirectoryURL: exportsDirectory),
             fileSystem: fileSystem,
-            ffmpegRunner: mockRunner,
-            metadataProvider: MockVideoMetadataProvider(defaultDuration: 30.0, isValid: true),
-            chunksDirectory: tempDir
+            metadataProvider: MockVideoMetadataProvider(defaultDuration: 10, isValid: true),
+            chunksDirectory: chunksDirectory
         )
-
-        let chunk1 = tempDir.appendingPathComponent("chunk1.mp4")
-        let chunk2 = tempDir.appendingPathComponent("chunk2.mp4")
-        let chunk3 = tempDir.appendingPathComponent("chunk3.mp4")
-        fileSystem.files[chunk1] = [.size: Int64(1000)]
-        fileSystem.files[chunk2] = [.size: Int64(1000)]
-        fileSystem.files[chunk3] = [.size: Int64(1000)]
-
-        let now = Date()
-        manager.registerChunk(url: chunk1, startTime: now.addingTimeInterval(-90), duration: 30.0)
-        manager.registerChunk(url: chunk2, startTime: now.addingTimeInterval(-60), duration: 30.0)
-        manager.registerChunk(url: chunk3, startTime: now.addingTimeInterval(-30), duration: 30.0)
-
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-
-        var completed = false
-        var exportedURL: URL? = nil
-        manager.exportClip(offsetSeconds: 45.0) { url in
-            exportedURL = url
-            completed = true
-        }
-
-        let timeout = Date().addingTimeInterval(1.0)
-        while !completed && Date() < timeout {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        }
+        manager.syncQueue()
+        let url = chunksDirectory.appendingPathComponent("missing_on_disk.mp4")
+        fileSystem.setFile(url, attributes: [.size: Int64(100)])
+        manager.registerChunk(url: url, startTime: Date().addingTimeInterval(-10), duration: 10)
         manager.syncQueue()
 
-        if !completed || exportedURL == nil {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Export clip timed out or returned nil URL"])
+        let result = try export(manager, footage: 5, endDate: Date())
+        guard case .failure(.failed) = result else {
+            throw TestFailure(description: "Expected a .failed result for unreadable chunks, got \(result)")
         }
-    }
-
-    static func testExportClip_avfoundationFallbackWhenFFmpegFails() throws {
-        let fileSystem = MockFileSystem()
-        let tempDir = URL(fileURLWithPath: "/tmp/recall_export_test_\(UUID().uuidString)")
-
-        let mockRunner = MockFFmpegRunner(ffmpegPathToReturn: nil, concatAndTrimResult: false)
-        let manager = ChunkManager(
-            config: MockStorageConfig(),
-            fileSystem: fileSystem,
-            ffmpegRunner: mockRunner,
-            metadataProvider: MockVideoMetadataProvider(defaultDuration: 30.0, isValid: true),
-            chunksDirectory: tempDir
-        )
-
-        let chunk1 = tempDir.appendingPathComponent("chunk1.mp4")
-        fileSystem.files[chunk1] = [.size: Int64(1000)]
-        manager.registerChunk(url: chunk1, startTime: Date(), duration: 30.0)
-
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-
-        var completed = false
-        manager.exportClip(offsetSeconds: 30.0) { _ in
-            completed = true
-        }
-
-        let timeout = Date().addingTimeInterval(1.5)
-        while !completed && Date() < timeout {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        }
-        manager.syncQueue()
-
-        if !completed {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Export completion was not invoked"])
-        }
-    }
-
-    static func testExportClip_avfoundationFallbackWithRealMP4Asset() throws {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("recall_real_asset_test_\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let chunkURL = tempDir.appendingPathComponent("chunk.mp4")
-        let writer = try AVAssetWriter(outputURL: chunkURL, fileType: .mp4)
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: 320,
-            AVVideoHeightKey: 240
-        ]
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
-        writer.add(input)
-        writer.startWriting()
-        writer.startSession(atSourceTime: CMTime.zero)
-
-        var pixelBuffer: CVPixelBuffer?
-        CVPixelBufferCreate(kCFAllocatorDefault, 320, 240, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
-        if let pb = pixelBuffer {
-            adaptor.append(pb, withPresentationTime: CMTime.zero)
-            adaptor.append(pb, withPresentationTime: CMTime(seconds: 2.0, preferredTimescale: 600))
-        }
-        input.markAsFinished()
-
-        let writerExp = NSCondition()
-        writerExp.lock()
-        writer.finishWriting {
-            writerExp.signal()
-        }
-        _ = writerExp.wait(until: Date().addingTimeInterval(2.0))
-        writerExp.unlock()
-
-        let fileSystem = MockFileSystem()
-        let attrs = (try? FileManager.default.attributesOfItem(atPath: chunkURL.path)) ?? [:]
-        fileSystem.files[chunkURL] = attrs
-
-        let mockRunner = MockFFmpegRunner(ffmpegPathToReturn: "/usr/local/bin/ffmpeg", concatAndTrimResult: false, fileSystem: fileSystem)
-        let manager = ChunkManager(
-            config: MockStorageConfig(exportsDirectoryURL: tempDir),
-            fileSystem: fileSystem,
-            ffmpegRunner: mockRunner,
-            metadataProvider: DefaultVideoMetadataProvider(),
-            chunksDirectory: tempDir
-        )
-
-        manager.registerChunk(url: chunkURL, startTime: Date().addingTimeInterval(-10), duration: 2.0)
-
-        var completed = false
-        manager.exportClip(offsetSeconds: 1.0) { _ in
-            completed = true
-        }
-
-        let timeout = Date().addingTimeInterval(3.0)
-        while !completed && Date() < timeout {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        }
-        manager.syncQueue()
     }
 }

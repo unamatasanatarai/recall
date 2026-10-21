@@ -1,100 +1,174 @@
 import Foundation
 import AVFoundation
+import Combine
 
-struct ChunkFile {
+struct ChunkFile: Equatable {
     let url: URL
     let startTime: Date
     let duration: TimeInterval
     let sizeBytes: Int64
 }
 
-
 final class ChunkManager: ChunkStore, @unchecked Sendable {
     static let shared = ChunkManager()
 
     let chunksDirectory: URL
-    private(set) var chunks: [ChunkFile] = []
+    private let manifestURL: URL
+    private let legacyCacheDirectory: URL?
+
+    // Serializes disk work and every mutation. Readers never wait on it; they take `lock`.
     private let queue = DispatchQueue(label: "com.recall.chunkmanager", qos: .userInitiated)
+    private let exportQueue = DispatchQueue(label: "com.recall.chunkmanager.export", qos: .userInitiated)
+
+    private let lock = NSLock()
+    private var storedChunks: [ChunkFile] = []   // guarded by lock, sorted by startTime
+    private var storedUsage = ChunkUsage()       // guarded by lock
+    private var pinCounts: [URL: Int] = [:]      // guarded by lock; chunks an export is reading
+
+    private let usageSubject = CurrentValueSubject<ChunkUsage, Never>(ChunkUsage())
 
     private let config: StorageConfig
     private let fileSystem: FileSystemProvider
-    private let ffmpegRunner: FFmpegRunner
     private let metadataProvider: VideoMetadataProvider
     private let exportSessionFactory: (AVAsset, String) -> AVAssetExportSession?
 
     private static let exportDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return formatter
-    }()
-
-    private static let chunkDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
         return formatter
     }()
 
     init(
         config: StorageConfig = SettingsManager.shared,
         fileSystem: FileSystemProvider = FileManager.default,
-        ffmpegRunner: FFmpegRunner = DefaultFFmpegRunner(),
         metadataProvider: VideoMetadataProvider = DefaultVideoMetadataProvider(),
         exportSessionFactory: @escaping (AVAsset, String) -> AVAssetExportSession? = { AVAssetExportSession(asset: $0, presetName: $1) },
-        chunksDirectory: URL? = nil
+        chunksDirectory: URL? = nil,
+        legacyCacheDirectory: URL? = nil
     ) {
         self.config = config
         self.fileSystem = fileSystem
-        self.ffmpegRunner = ffmpegRunner
         self.metadataProvider = metadataProvider
         self.exportSessionFactory = exportSessionFactory
 
         if let overrideDir = chunksDirectory {
             self.chunksDirectory = overrideDir
+            self.legacyCacheDirectory = legacyCacheDirectory
         } else {
             self.chunksDirectory = ConfigManager.shared.defaultChunksDirectory
+            self.legacyCacheDirectory = legacyCacheDirectory ?? ConfigManager.shared.legacyCacheDirectory
         }
+        self.manifestURL = self.chunksDirectory.appendingPathComponent("manifest.json")
 
-        try? self.fileSystem.createDirectory(at: self.chunksDirectory, withIntermediateDirectories: true, attributes: nil)
         loadExistingChunks()
     }
 
+    // MARK: - Reading
+
+    /// Snapshot of the indexed chunks, oldest first.
+    var chunks: [ChunkFile] {
+        return lock.withCriticalSection { storedChunks }
+    }
+
+    var usage: ChunkUsage {
+        return lock.withCriticalSection { storedUsage }
+    }
+
+    var usagePublisher: AnyPublisher<ChunkUsage, Never> {
+        return usageSubject.eraseToAnyPublisher()
+    }
+
+    func footageStartDate(footageSeconds: TimeInterval, endingAt endDate: Date) -> Date? {
+        return lock.withCriticalSection {
+            ExportPlanner.footageStart(chunks: storedChunks, footageSeconds: footageSeconds, endingAt: endDate)
+        }
+    }
+
+    func whenLoaded(_ completion: @escaping () -> Void) {
+        // The initial load was queued in init, so anything queued now runs after it.
+        queue.async {
+            DispatchQueue.main.async(execute: completion)
+        }
+    }
+
+    // MARK: - Indexing
+
     func loadExistingChunks() {
         queue.async {
-            guard let files = try? self.fileSystem.contentsOfDirectory(at: self.chunksDirectory, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey], options: []) else { return }
+            StorageDirectory.prepare(self.chunksDirectory, fileSystem: self.fileSystem)
+            if let legacy = self.legacyCacheDirectory {
+                LegacyStorageMigration.migrate(from: legacy, to: self.chunksDirectory, fileSystem: self.fileSystem)
+            }
 
+            guard let files = try? self.fileSystem.contentsOfDirectory(at: self.chunksDirectory, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey], options: []) else {
+                self.replaceChunks([])
+                return
+            }
+
+            let manifest = self.readManifest()
             var loaded: [ChunkFile] = []
-            for file in files where file.pathExtension == "mp4" {
+            var validatedCount = 0
+            for file in files {
+                if ChunkNaming.isPartial(file) {
+                    if let recovered = self.recoverPartialChunk(file) {
+                        loaded.append(recovered)
+                    }
+                    continue
+                }
+                guard ChunkNaming.isChunk(file) else { continue }
+
                 let attrs = (try? self.fileSystem.attributesOfItem(atPath: file.path)) ?? [:]
                 let size = (attrs[.size] as? Int64) ?? 0
-
                 if size == 0 {
                     try? self.fileSystem.removeItem(at: file)
                     continue
                 }
 
-                var startTime = (attrs[.creationDate] as? Date) ?? Date()
-                let name = file.deletingPathExtension().lastPathComponent
-                if name.hasPrefix("chunk_") {
-                    let dateString = String(name.dropFirst(6))
-                    if let parsedDate = ChunkManager.chunkDateFormatter.date(from: dateString) {
-                        startTime = parsedDate
-                    }
-                }
-
-                let meta = self.metadataProvider.durationAndIsValid(for: file)
-
-                guard meta.isValid else {
-                    print("[ChunkManager] Removing corrupt chunk: \(file.lastPathComponent)")
-                    try? self.fileSystem.removeItem(at: file)
+                if let entry = manifest[file.lastPathComponent], entry.size == size {
+                    loaded.append(ChunkFile(url: file, startTime: entry.start, duration: entry.duration, sizeBytes: size))
                     continue
                 }
 
+                // Not indexed yet (written by an earlier release, or just before a crash).
+                let meta = self.metadataProvider.durationAndIsValid(for: file)
+                guard meta.isValid else {
+                    Log.storage.notice("Removing corrupt chunk \(file.lastPathComponent, privacy: .public)")
+                    try? self.fileSystem.removeItem(at: file)
+                    continue
+                }
+                validatedCount += 1
+                let startTime = ChunkNaming.startDate(from: file) ?? (attrs[.creationDate] as? Date) ?? Date()
                 loaded.append(ChunkFile(url: file, startTime: startTime, duration: meta.duration, sizeBytes: size))
             }
 
-            self.chunks = loaded.sorted(by: { $0.startTime < $1.startTime })
-            self._enforceLimits()
+            Log.storage.notice("Indexed \(loaded.count) chunks (\(validatedCount) validated from disk)")
+            self.replaceChunks(loaded.sorted(by: { $0.startTime < $1.startTime }))
+            self.enforceLimitsOnQueue()
         }
+    }
+
+    /// A `.partial` chunk left behind by a crash. Fragmented writing keeps everything up to the
+    /// last fragment playable, so it is kept if AVFoundation can read it.
+    private func recoverPartialChunk(_ partialURL: URL) -> ChunkFile? {
+        let finalURL = partialURL.deletingPathExtension()
+        guard !fileSystem.fileExists(atPath: finalURL.path),
+              (try? fileSystem.moveItem(at: partialURL, to: finalURL)) != nil else {
+            try? fileSystem.removeItem(at: partialURL)
+            return nil
+        }
+
+        let size = ((try? fileSystem.attributesOfItem(atPath: finalURL.path))?[.size] as? Int64) ?? 0
+        let meta = metadataProvider.durationAndIsValid(for: finalURL)
+        guard size > 0, meta.isValid else {
+            try? fileSystem.removeItem(at: finalURL)
+            return nil
+        }
+
+        Log.storage.notice("Recovered interrupted chunk \(finalURL.lastPathComponent, privacy: .public)")
+        let startTime = ChunkNaming.startDate(from: finalURL) ?? Date()
+        return ChunkFile(url: finalURL, startTime: startTime, duration: meta.duration, sizeBytes: size)
     }
 
     func registerChunk(url: URL, startTime: Date, duration passedDuration: TimeInterval) {
@@ -102,172 +176,253 @@ final class ChunkManager: ChunkStore, @unchecked Sendable {
             let attrs = (try? self.fileSystem.attributesOfItem(atPath: url.path)) ?? [:]
             let size = (attrs[.size] as? Int64) ?? 0
 
-            if size > 0 {
-                let meta = self.metadataProvider.durationAndIsValid(for: url)
-                let actualDuration = meta.duration > 0 ? meta.duration : passedDuration
-
-                guard meta.isValid else {
-                    print("[ChunkManager] registerChunk: dropping corrupt chunk \(url.lastPathComponent)")
-                    try? self.fileSystem.removeItem(at: url)
-                    return
-                }
-
-                let chunk = ChunkFile(url: url, startTime: startTime, duration: actualDuration, sizeBytes: size)
-                self.chunks.append(chunk)
-                self.chunks.sort(by: { $0.startTime < $1.startTime })
-                self._enforceLimits()
-
-            } else {
+            guard size > 0 else {
                 try? self.fileSystem.removeItem(at: url)
+                return
             }
+
+            let meta = self.metadataProvider.durationAndIsValid(for: url)
+            guard meta.isValid else {
+                Log.storage.error("Dropping corrupt chunk \(url.lastPathComponent, privacy: .public)")
+                try? self.fileSystem.removeItem(at: url)
+                return
+            }
+
+            let actualDuration = meta.duration > 0 ? meta.duration : passedDuration
+            self.insert(ChunkFile(url: url, startTime: startTime, duration: actualDuration, sizeBytes: size))
+            self.enforceLimitsOnQueue()
         }
     }
 
-    var totalRecordedDuration: TimeInterval {
-        queue.sync {
-            return chunks.reduce(0.0) { $0 + $1.duration }
+    private func insert(_ chunk: ChunkFile) {
+        lock.withCriticalSection {
+            // A chunk registered twice must not be counted twice.
+            storedChunks.removeAll { $0.url == chunk.url }
+            // Chunks arrive in order, so this is almost always an append.
+            let index = storedChunks.lastIndex { $0.startTime <= chunk.startTime }.map { $0 + 1 } ?? 0
+            storedChunks.insert(chunk, at: index)
+            storedUsage = ChunkUsage(chunks: storedChunks)
         }
     }
+
+    private func replaceChunks(_ chunks: [ChunkFile]) {
+        lock.withCriticalSection {
+            storedChunks = chunks
+            storedUsage = ChunkUsage(chunks: chunks)
+        }
+    }
+
+    // MARK: - Retention
 
     func purgeAllChunks() {
         queue.async {
-            guard let files = try? self.fileSystem.contentsOfDirectory(at: self.chunksDirectory, includingPropertiesForKeys: nil, options: []) else { return }
+            let files = (try? self.fileSystem.contentsOfDirectory(at: self.chunksDirectory, includingPropertiesForKeys: nil, options: [])) ?? []
             var count = 0
-            for file in files {
+            // The `.partial` chunk in progress belongs to the recorder, which discards it itself.
+            for file in files where ChunkNaming.isChunk(file) {
                 try? self.fileSystem.removeItem(at: file)
                 count += 1
             }
-            self.chunks.removeAll()
-            print("[ChunkManager] Purged all \(count) stored recording chunks from disk.")
+            self.replaceChunks([])
+            self.persistAndPublish()
+            Log.storage.notice("Purged all \(count) stored recording chunks")
         }
     }
 
     func enforceLimits() {
         queue.async {
-            self._enforceLimits()
+            self.enforceLimitsOnQueue()
         }
     }
 
-    private func _enforceLimits() {
+    private func enforceLimitsOnQueue() {
         let maxSizeBytes = config.maxBufferSizeBytes
         let maxDurationSecs = config.maxStorageDurationSeconds
 
-        var totalSize = self.chunks.reduce(0) { $0 + $1.sizeBytes }
-        var totalDuration = self.chunks.reduce(0.0) { $0 + $1.duration }
+        let purged: [ChunkFile] = lock.withCriticalSection {
+            var purged: [ChunkFile] = []
+            var usage = storedUsage
+            // A chunk an export is reading stays until the export finishes, then this runs again.
+            while usage.totalBytes > maxSizeBytes || usage.totalDuration > maxDurationSecs,
+                  let oldest = storedChunks.first, pinCounts[oldest.url] == nil {
+                storedChunks.removeFirst()
+                usage.count -= 1
+                usage.totalBytes -= oldest.sizeBytes
+                usage.totalDuration -= oldest.duration
+                purged.append(oldest)
+            }
+            if !purged.isEmpty {
+                storedUsage = ChunkUsage(chunks: storedChunks)
+            }
+            return purged
+        }
 
-        while (totalSize > maxSizeBytes || totalDuration > maxDurationSecs), !self.chunks.isEmpty {
-            let oldest = self.chunks.removeFirst()
-            try? fileSystem.removeItem(at: oldest.url)
-            totalSize -= oldest.sizeBytes
-            totalDuration -= oldest.duration
-            print("[ChunkManager] Purged oldest chunk: \(oldest.url.lastPathComponent) (Remaining total size: \(totalSize / 1024 / 1024)MB, duration: \(String(format: "%.1f", totalDuration))s)")
+        for chunk in purged {
+            try? fileSystem.removeItem(at: chunk.url)
+            Log.storage.info("Purged oldest chunk \(chunk.url.lastPathComponent, privacy: .public)")
+        }
+        persistAndPublish()
+    }
+
+    // MARK: - Manifest
+
+    private func readManifest() -> [String: ChunkManifest.Entry] {
+        guard let data = fileSystem.readData(at: manifestURL),
+              let manifest = try? JSONDecoder().decode(ChunkManifest.self, from: data) else { return [:] }
+        return Dictionary(manifest.chunks.map { ($0.name, $0) }, uniquingKeysWith: { _, latest in latest })
+    }
+
+    private func persistAndPublish() {
+        let (chunks, usage) = lock.withCriticalSection { (storedChunks, storedUsage) }
+        let manifest = ChunkManifest(chunks: chunks.map {
+            ChunkManifest.Entry(name: $0.url.lastPathComponent, start: $0.startTime, duration: $0.duration, size: $0.sizeBytes)
+        })
+        do {
+            try fileSystem.writeData(try JSONEncoder().encode(manifest), to: manifestURL)
+        } catch {
+            Log.storage.error("Could not write chunk manifest: \(error.localizedDescription, privacy: .public)")
+        }
+        DispatchQueue.main.async {
+            self.usageSubject.send(usage)
         }
     }
 
-    func exportClip(offsetSeconds: TimeInterval, completion: @escaping (URL?) -> Void) {
-        // Step 1: Async flush in-progress chunk
-        RecorderEngine.shared.flushCurrentChunk {
-            self.queue.async {
-                let targetSeconds = max(1.0, offsetSeconds)
+    // MARK: - Export
 
-                let validChunks = self.chunks.filter { chunk in
-                    let attrs = (try? self.fileSystem.attributesOfItem(atPath: chunk.url.path)) ?? [:]
-                    let size = (attrs[.size] as? Int64) ?? 0
-                    return size > 0 && chunk.duration > 0
+    func exportClip(_ request: ExportRequest, completion: @escaping (Result<URL, ExportError>) -> Void) {
+        // Queued behind any registration, so a chunk flushed just before this call is included.
+        queue.async {
+            let footage = max(ConfigManager.shared.minExportOffsetSeconds, request.footageSeconds)
+            let segments = self.lock.withCriticalSection {
+                ExportPlanner.plan(chunks: self.storedChunks, footageSeconds: footage, endingAt: request.endDate)
+            }
+
+            guard !segments.isEmpty else {
+                Log.export.notice("No recorded chunks available for export")
+                DispatchQueue.main.async { completion(.failure(.noFootage)) }
+                return
+            }
+
+            self.pin(segments)
+            let exportURL = self.uniqueExportURL(for: request.endDate)
+            let total = segments.reduce(0.0) { $0 + $1.duration }
+            Log.export.notice("Exporting \(segments.count) segments (\(String(format: "%.1f", total), privacy: .public)s)")
+
+            // The chunk queue stays free while AVFoundation works, so recording is never blocked.
+            self.exportQueue.async {
+                self.export(segments, to: exportURL) { result in
+                    self.queue.async {
+                        self.unpin(segments)
+                        self.enforceLimitsOnQueue()
+                    }
+                    DispatchQueue.main.async { completion(result) }
                 }
+            }
+        }
+    }
 
-                let sorted = validChunks.sorted(by: { $0.startTime < $1.startTime })
-                var selectedChunks: [ChunkFile] = []
-                var accumulated: TimeInterval = 0
+    /// Keeps `segments` from being purged while an export reads them.
+    func pin(_ segments: [ExportSegment]) {
+        lock.withCriticalSection {
+            for segment in segments {
+                pinCounts[segment.url, default: 0] += 1
+            }
+        }
+    }
 
-                for chunk in sorted.reversed() {
-                    selectedChunks.insert(chunk, at: 0)
-                    accumulated += chunk.duration
-                    if accumulated >= targetSeconds { break }
-                }
+    func unpin(_ segments: [ExportSegment]) {
+        lock.withCriticalSection {
+            for segment in segments {
+                let remaining = (pinCounts[segment.url] ?? 1) - 1
+                pinCounts[segment.url] = remaining > 0 ? remaining : nil
+            }
+        }
+    }
 
-                guard !selectedChunks.isEmpty else {
-                    print("[ChunkManager] No valid chunks available for export")
-                    DispatchQueue.main.async { completion(nil) }
-                    return
-                }
+    /// Never overwrites an earlier export, even one made within the same second.
+    private func uniqueExportURL(for date: Date) -> URL {
+        let directory = config.exportsDirectoryURL
+        let baseName = "Recall_\(ChunkManager.exportDateFormatter.string(from: date))"
+        var candidate = directory.appendingPathComponent("\(baseName).mp4")
+        var suffix = 2
+        while fileSystem.fileExists(atPath: candidate.path) {
+            candidate = directory.appendingPathComponent("\(baseName)-\(suffix).mp4")
+            suffix += 1
+        }
+        return candidate
+    }
 
-                let excess = max(0, accumulated - targetSeconds)
+    private func export(_ segments: [ExportSegment], to outputURL: URL, completion: @escaping (Result<URL, ExportError>) -> Void) {
+        let composition = AVMutableComposition()
+        guard let compVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            completion(.failure(.failed("Could not create the export composition.")))
+            return
+        }
 
-                print("[ChunkManager] Exporting \(selectedChunks.count) chunks for \(targetSeconds)s (accumulated=\(String(format: "%.1f", accumulated))s, trimming \(String(format: "%.1f", excess))s from beginning)")
+        let timescale = ConfigManager.shared.timescale
+        var insertTime = CMTime.zero
+        for segment in segments {
+            let asset = AVURLAsset(url: segment.url)
+            guard let assetVideoTrack = asset.tracks(withMediaType: .video).first else {
+                Log.export.error("Skipping unreadable chunk \(segment.url.lastPathComponent, privacy: .public)")
+                continue
+            }
 
-                let now = Date()
-                let exportsDir = self.config.exportsDirectoryURL
-                let exportURL = exportsDir.appendingPathComponent("Recall_\(ChunkManager.exportDateFormatter.string(from: now)).mp4")
-                try? self.fileSystem.removeItem(at: exportURL)
+            let start = CMTime(seconds: segment.start, preferredTimescale: timescale)
+            let end = CMTimeMinimum(CMTime(seconds: segment.end, preferredTimescale: timescale), asset.duration)
+            guard CMTimeCompare(end, start) > 0 else { continue }
 
-                if let ffmpegPath = self.ffmpegRunner.findFFmpegPath(fileSystem: self.fileSystem) {
-                    let tempDir = FileManager.default.temporaryDirectory
-                    let listURL = tempDir.appendingPathComponent("recall_concat_\(UUID().uuidString).txt")
+            let range = CMTimeRange(start: start, end: end)
+            do {
+                try compVideoTrack.insertTimeRange(range, of: assetVideoTrack, at: insertTime)
+                insertTime = CMTimeAdd(insertTime, range.duration)
+            } catch {
+                Log.export.error("Could not add \(segment.url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
 
-                    var listContent = ""
-                    for c in selectedChunks {
-                        listContent += "file '\(c.url.path)'\n"
-                    }
-                    try? listContent.write(to: listURL, atomically: true, encoding: .utf8)
+        guard CMTimeCompare(insertTime, .zero) > 0 else {
+            completion(.failure(.failed("The recorded chunks could not be read.")))
+            return
+        }
 
-                    defer {
-                        try? self.fileSystem.removeItem(at: listURL)
-                    }
+        // Stream copy first: lossless and near-instant. Re-encode only when the chunks cannot be
+        // joined as they are (for example after a resolution or codec change mid-clip).
+        runExportSession(composition, presetName: AVAssetExportPresetPassthrough, outputURL: outputURL) { passthroughError in
+            guard let passthroughError = passthroughError else {
+                Log.export.notice("Clip exported to \(outputURL.lastPathComponent, privacy: .public)")
+                completion(.success(outputURL))
+                return
+            }
 
-                    print("[ChunkManager] Running single-pass ffmpeg concat & trim via \(ffmpegPath)...")
-                    let success = self.ffmpegRunner.concatAndTrim(listURL: listURL, outputURL: exportURL, excessSeconds: excess, ffmpegPath: ffmpegPath)
-
-                    if success && self.fileSystem.fileExists(atPath: exportURL.path) {
-                        print("[ChunkManager] Single-pass ffmpeg export successful: \(exportURL.path)")
-                        DispatchQueue.main.async { completion(exportURL) }
-                        return
-                    }
-                    print("[ChunkManager] ffmpeg export failed, falling back to AVMutableComposition...")
-                }
-
-                // Fallback: AVMutableComposition with re-encoding
-                let composition = AVMutableComposition()
-                let compVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
-
-                var insertTime = CMTime.zero
-
-                for (index, chunk) in selectedChunks.enumerated() {
-                    let asset = AVAsset(url: chunk.url)
-                    guard let assetVideoTrack = asset.tracks(withMediaType: .video).first else { continue }
-
-                    let assetDuration = asset.duration
-                    var startTimeInChunk = CMTime.zero
-                    if index == 0 && excess > 0 {
-                        startTimeInChunk = CMTime(seconds: excess, preferredTimescale: 600)
-                    }
-
-                    let durationInChunk = CMTimeSubtract(assetDuration, startTimeInChunk)
-                    if CMTimeCompare(durationInChunk, .zero) > 0 {
-                        let range = CMTimeRange(start: startTimeInChunk, duration: durationInChunk)
-                        try? compVideoTrack?.insertTimeRange(range, of: assetVideoTrack, at: insertTime)
-                        insertTime = CMTimeAdd(insertTime, durationInChunk)
-                    }
-                }
-
-                if let exportSession = self.exportSessionFactory(composition, AVAssetExportPresetHighestQuality) {
-                    exportSession.outputURL = exportURL
-                    exportSession.outputFileType = .mp4
-
-                    exportSession.exportAsynchronously {
-                        DispatchQueue.main.async {
-                            if exportSession.status == .completed {
-                                print("[ChunkManager] Fallback clip exported successfully: \(exportURL.path)")
-                                completion(exportURL)
-                            } else {
-                                print("[ChunkManager] Fallback export failed: \(String(describing: exportSession.error))")
-                                completion(nil)
-                            }
-                        }
-                    }
+            Log.export.notice("Passthrough export failed (\(passthroughError, privacy: .public)); re-encoding")
+            try? self.fileSystem.removeItem(at: outputURL)
+            self.runExportSession(composition, presetName: AVAssetExportPresetHighestQuality, outputURL: outputURL) { encodeError in
+                if let encodeError = encodeError {
+                    Log.export.error("Export failed: \(encodeError, privacy: .public)")
+                    try? self.fileSystem.removeItem(at: outputURL)
+                    completion(.failure(.failed("The clip could not be exported: \(encodeError)")))
                 } else {
-                    DispatchQueue.main.async { completion(nil) }
+                    Log.export.notice("Clip re-encoded to \(outputURL.lastPathComponent, privacy: .public)")
+                    completion(.success(outputURL))
                 }
+            }
+        }
+    }
+
+    /// Calls `completion` with nil on success, or a description of the failure.
+    private func runExportSession(_ asset: AVAsset, presetName: String, outputURL: URL, completion: @escaping (String?) -> Void) {
+        guard let exportSession = exportSessionFactory(asset, presetName) else {
+            completion("\(presetName) export is unavailable")
+            return
+        }
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mp4
+        exportSession.exportAsynchronously {
+            if exportSession.status == .completed {
+                completion(nil)
+            } else {
+                completion(exportSession.error?.localizedDescription ?? "export ended with status \(exportSession.status.rawValue)")
             }
         }
     }

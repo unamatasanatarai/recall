@@ -1,11 +1,28 @@
 import AppKit
 
 struct SettingsWindowControllerTests {
+    private static func commandQ(isARepeat: Bool = false, modifiers: NSEvent.ModifierFlags = [.command], characters: String = "q") -> NSEvent? {
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: isARepeat,
+            keyCode: 12
+        )
+    }
+
     static func testWindowSingletonInstanceReuse() throws {
         let controller = SettingsWindowController.shared
         controller.showWindow()
+        let first = controller.window
         controller.showWindow()
-        // Repeated calls reuses single window without crashing
+        try check(first != nil && controller.window === first, "Repeated calls should reuse the single window")
+        controller.closeWindow()
     }
 
     static func testEscapeKeyWindowClosure() throws {
@@ -15,8 +32,10 @@ struct SettingsWindowControllerTests {
             backing: .buffered,
             defer: false
         )
+        prefWindow.isReleasedWhenClosed = false
+        prefWindow.orderFront(nil)
         prefWindow.cancelOperation(nil)
-        // Verified cancelOperation invokes close()
+        try check(!prefWindow.isVisible, "Escape should close the window")
     }
 
     static func testPreferencesResetButtonAction() throws {
@@ -26,9 +45,7 @@ struct SettingsWindowControllerTests {
 
         settings.resetToDefaults()
 
-        if settings.maxStorageMB != 1000 || settings.maxStorageMinutes != 60 {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Reset to defaults failed"])
-        }
+        try check(settings.maxStorageMB == 1000 && settings.maxStorageMinutes == 60, "Reset to defaults failed")
     }
 
     static func testSingleCmdQShowsNotificationPrompt() throws {
@@ -37,15 +54,10 @@ struct SettingsWindowControllerTests {
         controller.quitHandler = { quitInvoked = true }
         controller.resetQuitPrompt()
 
-        let now = Date()
-        controller.handleCmdQ(now: now)
+        controller.handleCmdQ(now: Date())
 
-        if !controller.isQuitPromptVisible {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected isQuitPromptVisible to be true on first Cmd+Q"])
-        }
-        if quitInvoked {
-            throw NSError(domain: "TestError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Expected quit not to be invoked on single Cmd+Q"])
-        }
+        try check(controller.isQuitPromptVisible, "Expected isQuitPromptVisible to be true on first Cmd+Q")
+        try check(!quitInvoked, "Expected quit not to be invoked on single Cmd+Q")
         controller.resetQuitPrompt()
     }
 
@@ -57,16 +69,10 @@ struct SettingsWindowControllerTests {
 
         let t0 = Date()
         controller.handleCmdQ(now: t0)
+        controller.handleCmdQ(now: t0.addingTimeInterval(0.3))
 
-        let t1 = t0.addingTimeInterval(0.3)
-        controller.handleCmdQ(now: t1)
-
-        if !quitInvoked {
-            throw NSError(domain: "TestError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Expected quit to be invoked on second Cmd+Q"])
-        }
-        if controller.isQuitPromptVisible {
-            throw NSError(domain: "TestError", code: 4, userInfo: [NSLocalizedDescriptionKey: "Expected isQuitPromptVisible to reset on double Cmd+Q quit"])
-        }
+        try check(quitInvoked, "Expected quit to be invoked on second Cmd+Q")
+        try check(!controller.isQuitPromptVisible, "Expected isQuitPromptVisible to reset on double Cmd+Q quit")
         controller.resetQuitPrompt()
     }
 
@@ -78,53 +84,35 @@ struct SettingsWindowControllerTests {
 
         let t0 = Date()
         controller.handleCmdQ(now: t0)
-
         // Simulate press after threshold has elapsed (e.g. 2.5s > 2.0s threshold)
-        let t1 = t0.addingTimeInterval(2.5)
-        controller.handleCmdQ(now: t1)
+        controller.handleCmdQ(now: t0.addingTimeInterval(2.5))
 
-        if quitInvoked {
-            throw NSError(domain: "TestError", code: 5, userInfo: [NSLocalizedDescriptionKey: "Expected quit NOT to be invoked when presses exceed doublePressThreshold"])
-        }
-        if !controller.isQuitPromptVisible {
-            throw NSError(domain: "TestError", code: 6, userInfo: [NSLocalizedDescriptionKey: "Expected isQuitPromptVisible to be true for new initial press"])
-        }
+        try check(!quitInvoked, "Expected quit NOT to be invoked when presses exceed doublePressThreshold")
+        try check(controller.isQuitPromptVisible, "Expected isQuitPromptVisible to be true for new initial press")
         controller.resetQuitPrompt()
     }
 
-    static func testPreferencesWindowKeyEquivalentCmdQ() throws {
+    static func testKeyMonitorHandlesCmdQ() throws {
         let controller = SettingsWindowController.shared
+        var quitCount = 0
+        controller.quitHandler = { quitCount += 1 }
         controller.resetQuitPrompt()
 
-        let window = PreferencesWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-
-        let event = NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [.command],
-            timestamp: 0,
-            windowNumber: window.windowNumber,
-            context: nil,
-            characters: "q",
-            charactersIgnoringModifiers: "q",
-            isARepeat: false,
-            keyCode: 12
-        )
-
-        if let event = event {
-            let handled = window.performKeyEquivalent(with: event)
-            if !handled {
-                throw NSError(domain: "TestError", code: 7, userInfo: [NSLocalizedDescriptionKey: "Expected performKeyEquivalent to handle Cmd+Q"])
-            }
-            if !controller.isQuitPromptVisible {
-                throw NSError(domain: "TestError", code: 8, userInfo: [NSLocalizedDescriptionKey: "Expected isQuitPromptVisible to be true after keyEquivalent Cmd+Q"])
-            }
+        guard let press = commandQ(), let held = commandQ(isARepeat: true), let plainQ = commandQ(modifiers: []), let other = commandQ(characters: "w") else {
+            throw TestFailure(description: "Could not create key events")
         }
+
+        try check(controller.handleKeyDown(press) == nil, "Cmd+Q must be consumed so the main menu does not quit")
+        try check(controller.isQuitPromptVisible && quitCount == 0, "The first press should only show the prompt")
+
+        try check(controller.handleKeyDown(held) == nil, "Key repeat must be consumed too")
+        try check(quitCount == 0, "Holding Cmd+Q must not count as a second press")
+
+        try check(controller.handleKeyDown(plainQ) === plainQ, "A plain Q must pass through")
+        try check(controller.handleKeyDown(other) === other, "Other shortcuts must pass through")
+
+        _ = controller.handleKeyDown(press)
+        try check(quitCount == 1, "A second distinct press should quit")
         controller.resetQuitPrompt()
     }
 
@@ -133,8 +121,6 @@ struct SettingsWindowControllerTests {
         controller.handleCmdQ()
         controller.closeWindow()
 
-        if controller.isQuitPromptVisible {
-            throw NSError(domain: "TestError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Expected closeWindow to dismiss quit prompt"])
-        }
+        try check(!controller.isQuitPromptVisible, "Expected closeWindow to dismiss quit prompt")
     }
 }

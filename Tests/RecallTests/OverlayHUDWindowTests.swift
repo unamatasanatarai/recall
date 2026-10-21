@@ -4,28 +4,43 @@ import SwiftUI
 struct OverlayHUDWindowTests {
     static func testHUDWindowProperties() throws {
         let window = OverlayHUDWindow.shared
-        if window.isOpaque {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected window.isOpaque == false"])
-        }
-        if window.backgroundColor != .clear {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected clear background color"])
-        }
-        if window.level != .popUpMenu {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected popUpMenu window level"])
-        }
-        if !window.ignoresMouseEvents {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected ignoresMouseEvents == true"])
-        }
+        try check(!window.isOpaque, "Expected window.isOpaque == false")
+        try check(window.backgroundColor == .clear, "Expected clear background color")
+        try check(window.level == .popUpMenu, "Expected popUpMenu window level")
+        try check(window.ignoresMouseEvents, "Expected ignoresMouseEvents == true")
+        try check(window.sharingType == .none, "The HUD should be kept out of screen captures")
     }
 
-    static func testCoordinateConversion() throws {
-        let screenHeight: CGFloat = 900.0
-        let cocoaPoint = NSPoint(x: 100, y: 200)
-        let swiftUIPoint = CGPoint(x: cocoaPoint.x, y: screenHeight - cocoaPoint.y)
+    static func testLayoutHugsBeamInsteadOfScreen() throws {
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let layout = OverlayHUDWindow.layout(start: NSPoint(x: 700, y: 880), current: NSPoint(x: 700, y: 500), screenFrame: screen)
 
-        if swiftUIPoint.x != 100 || swiftUIPoint.y != 700 {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Coordinate conversion mismatch"])
-        }
+        try check(layout.frame.width < screen.width / 2, "The window should not span the screen: \(layout.frame)")
+        try check(screen.contains(layout.frame), "The window must stay on screen: \(layout.frame)")
+        // Top-left view coordinates: the start sits above the current point.
+        try check(layout.startPoint == CGPoint(x: 700 - layout.frame.minX, y: layout.frame.maxY - 880), "Unexpected start point \(layout.startPoint)")
+        try check(layout.currentPoint == CGPoint(x: 700 - layout.frame.minX, y: layout.frame.maxY - 500), "Unexpected current point \(layout.currentPoint)")
+        try check(layout.badgeCenter.x > layout.currentPoint.x, "The badge goes to the right of the knob when there is room")
+    }
+
+    static func testBadgeFlipsLeftNearRightEdge() throws {
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let layout = OverlayHUDWindow.layout(start: NSPoint(x: 1400, y: 880), current: NSPoint(x: 1400, y: 600), screenFrame: screen)
+
+        try check(layout.badgeCenter.x < layout.currentPoint.x, "Near the right edge the badge should sit left of the knob")
+        let badgeRightEdge = layout.frame.minX + layout.badgeCenter.x + OverlayHUDWindow.badgeSize.width / 2
+        try check(badgeRightEdge <= screen.maxX, "The badge must not be clipped: right edge \(badgeRightEdge)")
+    }
+
+    static func testLayoutOnSecondaryScreen() throws {
+        // A display to the right of the main one, with its own menu bar.
+        let screen = NSRect(x: 1440, y: -180, width: 1920, height: 1080)
+        let start = NSPoint(x: 2600, y: 878)
+        let current = NSPoint(x: 2600, y: 400)
+        let layout = OverlayHUDWindow.layout(start: start, current: current, screenFrame: screen)
+
+        try check(screen.contains(layout.frame), "The window must be on the screen the drag started on: \(layout.frame)")
+        try check(layout.startPoint == CGPoint(x: start.x - layout.frame.minX, y: layout.frame.maxY - start.y), "Screen origin must be accounted for: \(layout.startPoint)")
     }
 
     static func testTaperedBeamPathGeneration() throws {
@@ -36,21 +51,7 @@ struct OverlayHUDWindowTests {
             endWidth: 20
         )
         let path = shape.path(in: CGRect(x: 0, y: 0, width: 200, height: 200))
-        if path.isEmpty {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected non-empty path for beam shape"])
-        }
-    }
-
-    static func testTimeOffsetFormatter() throws {
-        let secondsExact: TimeInterval = 120
-        let secondsFractional: TimeInterval = 90
-
-        let minsExact = secondsExact / 60.0
-        let minsFractional = secondsFractional / 60.0
-
-        if minsExact != 2.0 || minsFractional != 1.5 {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Time offset minute calculation incorrect"])
-        }
+        try check(!path.isEmpty, "Expected non-empty path for beam shape")
     }
 
     static func testViewModelReactivity() throws {
@@ -58,9 +59,19 @@ struct OverlayHUDWindowTests {
         vm.startPoint = CGPoint(x: 10, y: 20)
         vm.currentPoint = CGPoint(x: 10, y: 100)
         vm.offsetSeconds = 60
+        vm.label = "label"
 
-        if vm.startPoint.x != 10 || vm.currentPoint.y != 100 || vm.offsetSeconds != 60 {
-            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "ViewModel property updates failed"])
+        try check(vm.startPoint.x == 10 && vm.currentPoint.y == 100 && vm.offsetSeconds == 60 && vm.label == "label", "ViewModel property updates failed")
+    }
+
+    static func testShowAndHide() throws {
+        let window = OverlayHUDWindow.shared
+        window.show(at: NSPoint(x: 300, y: 400), startLocation: NSPoint(x: 300, y: 880), offsetSeconds: 30)
+        if NSScreen.main != nil {
+            try check(window.isVisible, "Expected the HUD to be visible")
+            try check(window.frame.height < 900, "The HUD should be sized to the beam")
         }
+        window.hideHUD()
+        try check(!window.isVisible, "Expected window.isVisible = false after hideHUD()")
     }
 }
